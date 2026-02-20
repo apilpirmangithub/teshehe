@@ -6,6 +6,21 @@ set -e
 
 echo "=== Conway Automaton Auto-Setup ==="
 
+# 0. Install Tor (for geoblock bypass via EU exit nodes)
+echo "Installing Tor..."
+sudo apt-get update -qq && sudo apt-get install -y -qq tor netcat-openbsd > /dev/null 2>&1
+# Configure Tor with EU exit nodes
+sudo tee /etc/tor/torrc > /dev/null << 'TORRC'
+SocksPort 9050
+ExitNodes {de},{nl},{gb},{fr},{ch},{at},{be},{ie},{se},{no},{dk},{fi}
+StrictNodes 1
+CircuitBuildTimeout 30
+LearnCircuitBuildTimeout 0
+TORRC
+# Start Tor in background
+sudo tor &>/dev/null &
+echo "✅ Tor installed & starting"
+
 # 1. Install dependencies & build
 cd /workspaces/teshehe/automaton
 npm install -g pnpm

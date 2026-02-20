@@ -17,38 +17,43 @@
 import { ClobClient, Chain, Side, type OrderType } from "@polymarket/clob-client";
 import { Wallet as EthersV5Wallet } from "@ethersproject/wallet";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import axios from "axios";
 import * as https from "https";
 import * as http from "http";
+import { execSync, spawn, type ChildProcess } from "child_process";
 
 // ─── Geoblock Detection & Proxy System ────────────────────────
 // Polymarket blocks trading from certain regions (US, Singapore, etc.)
-// This system detects geoblock and attempts proxy bypass.
+// Primary bypass: Tor SOCKS5 proxy with European exit nodes.
+// Fallback: POLYMARKET_PROXY_URL env var or auto-discovery.
 
 let _isGeoblocked: boolean | null = null;  // null = unknown
-let _proxyAgent: HttpsProxyAgent<string> | null = null;
+let _proxyAgent: SocksProxyAgent | HttpsProxyAgent<string> | null = null;
 let _proxyUrl: string | null = null;
 let _geoblockCheckDone = false;
+let _torProcess: ChildProcess | null = null;
 
-// Set POLYMARKET_PROXY_URL env var to route CLOB API through a proxy
-// Example: export POLYMARKET_PROXY_URL=http://proxy-host:8080
+const TOR_SOCKS = "socks5h://127.0.0.1:9050";
 const ENV_PROXY_URL = process.env.POLYMARKET_PROXY_URL;
 
 /**
  * Check if we're geoblocked by Polymarket, and set up proxy if needed.
- * Called once on startup before any order placement.
+ * Strategy: 1) Direct → 2) Tor SOCKS5 → 3) ENV proxy → 4) Auto-discover
  */
 export async function checkAndConfigureProxy(): Promise<{ geoblocked: boolean; proxyActive: boolean; proxyUrl?: string }> {
   if (_geoblockCheckDone && _isGeoblocked === false) {
     return { geoblocked: false, proxyActive: !!_proxyAgent, proxyUrl: _proxyUrl || undefined };
+  }
+  if (_geoblockCheckDone && _proxyUrl) {
+    return { geoblocked: true, proxyActive: true, proxyUrl: _proxyUrl };
   }
 
   console.log("[Polymarket] Checking geoblock status...");
 
   // Step 1: Test direct connection
   try {
-    const resp = await axios.post("https://clob.polymarket.com/order", {}, { timeout: 10000, proxy: false });
-    // If we get here without error, we're not geoblocked (though order will fail for other reasons)
+    await axios.post("https://clob.polymarket.com/order", {}, { timeout: 10000, proxy: false });
     _isGeoblocked = false;
     _geoblockCheckDone = true;
     console.log("[Polymarket] ✓ Not geoblocked — direct connection works");
@@ -59,152 +64,238 @@ export async function checkAndConfigureProxy(): Promise<{ geoblocked: boolean; p
       _isGeoblocked = true;
       console.warn("[Polymarket] ⚠ GEOBLOCKED — Trading restricted from this region");
     } else {
-      // Other error (auth, etc.) — we're probably not geoblocked
       _isGeoblocked = false;
       _geoblockCheckDone = true;
-      console.log("[Polymarket] ✓ Not geoblocked (got non-geoblock error: probably auth)");
+      console.log("[Polymarket] ✓ Not geoblocked (got non-geoblock error)");
       return { geoblocked: false, proxyActive: false };
     }
   }
 
-  // Step 2: If geoblocked, try configured proxy
-  const proxyUrl = ENV_PROXY_URL;
-  if (proxyUrl) {
-    console.log(`[Polymarket] Testing configured proxy: ${proxyUrl}`);
-    const works = await testProxy(proxyUrl);
-    if (works) {
-      activateProxy(proxyUrl);
+  // Step 2: Try Tor SOCKS5 proxy (most reliable free option)
+  console.log("[Polymarket] Trying Tor proxy (European exit nodes)...");
+  const torReady = await ensureTorRunning();
+  if (torReady) {
+    const torWorks = await testSocksProxy(TOR_SOCKS);
+    if (torWorks) {
+      activateSocksProxy(TOR_SOCKS);
       _geoblockCheckDone = true;
-      return { geoblocked: true, proxyActive: true, proxyUrl };
+      console.log("[Polymarket] ✅ Tor proxy ACTIVE — geoblock bypassed!");
+      return { geoblocked: true, proxyActive: true, proxyUrl: TOR_SOCKS };
     } else {
-      console.warn(`[Polymarket] Configured proxy failed: ${proxyUrl}`);
+      console.warn("[Polymarket] Tor connected but still blocked (exit node may be flagged)");
+      // Try getting a new Tor circuit
+      try { execSync("kill -HUP $(pgrep -f 'tor$' | head -1) 2>/dev/null || true"); } catch {}
+      await new Promise(r => setTimeout(r, 3000));
+      const torWorks2 = await testSocksProxy(TOR_SOCKS);
+      if (torWorks2) {
+        activateSocksProxy(TOR_SOCKS);
+        _geoblockCheckDone = true;
+        console.log("[Polymarket] ✅ Tor proxy ACTIVE (new circuit) — geoblock bypassed!");
+        return { geoblocked: true, proxyActive: true, proxyUrl: TOR_SOCKS };
+      }
     }
   }
 
-  // Step 3: Try auto-discovering working proxies
-  console.log("[Polymarket] Attempting auto-proxy discovery...");
-  const proxySources = [
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=DE,GB,NL,FR,JP,AU,BR&ssl=all&anonymity=elite",
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=DE,GB,NL,FR&ssl=all&anonymity=anonymous",
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=DE,GB&ssl=all&anonymity=all",
-  ];
-
-  for (const source of proxySources) {
-    let proxies: string[] = [];
-    try {
-      const resp = await axios.get(source, { timeout: 8000, proxy: false });
-      proxies = String(resp.data).trim().split("\n").filter(Boolean).slice(0, 20);
-      console.log(`[Polymarket] Found ${proxies.length} proxy candidates from source, testing in batches...`);
-    } catch {
-      console.log(`[Polymarket] Proxy source unavailable, trying next...`);
-      continue;
+  // Step 3: Try user-configured proxy
+  if (ENV_PROXY_URL) {
+    console.log(`[Polymarket] Testing configured proxy: ${ENV_PROXY_URL}`);
+    const works = ENV_PROXY_URL.startsWith("socks")
+      ? await testSocksProxy(ENV_PROXY_URL)
+      : await testHttpProxy(ENV_PROXY_URL);
+    if (works) {
+      if (ENV_PROXY_URL.startsWith("socks")) activateSocksProxy(ENV_PROXY_URL);
+      else activateHttpProxy(ENV_PROXY_URL);
+      _geoblockCheckDone = true;
+      return { geoblocked: true, proxyActive: true, proxyUrl: ENV_PROXY_URL };
     }
-
-    // Test proxies in parallel batches of 5 for speed
-    for (let i = 0; i < proxies.length; i += 5) {
-      const batch = proxies.slice(i, i + 5).map(p => `http://${p.trim()}`);
-      const results = await Promise.allSettled(batch.map(url => testProxy(url).then(ok => ({ url, ok }))));
-      
-      for (const result of results) {
-        if (result.status === "fulfilled" && result.value.ok) {
-          const url = result.value.url;
-          try {
-            activateProxy(url);
-          } catch (activationErr: any) {
-            console.error(`[Polymarket] Proxy activation error: ${activationErr.message}`);
-            _proxyUrl = url;
-            _isGeoblocked = true;
-          }
-          _geoblockCheckDone = true;
-          return { geoblocked: true, proxyActive: true, proxyUrl: url };
-        }
-      }
-    }
+    console.warn(`[Polymarket] Configured proxy failed: ${ENV_PROXY_URL}`);
   }
 
   // No proxy found
   _geoblockCheckDone = true;
   console.error("[Polymarket] ❌ GEOBLOCKED and no working proxy found!");
-  console.error("[Polymarket] Set POLYMARKET_PROXY_URL env var to an HTTP proxy in an allowed region.");
-  console.error("[Polymarket] Example: export POLYMARKET_PROXY_URL=http://your-proxy:8080");
-  console.error("[Polymarket] Tip: Use a VPS in Germany/UK/Netherlands as a simple SOCKS/HTTP proxy.");
+  console.error("[Polymarket] Install Tor: sudo apt install tor && sudo tor");
+  console.error("[Polymarket] Or set POLYMARKET_PROXY_URL=socks5h://host:port");
   return { geoblocked: true, proxyActive: false };
 }
 
 /**
- * Test if a proxy can reach Polymarket CLOB without geoblock.
+ * Ensure Tor is running with European exit nodes.
  */
-async function testProxy(proxyUrl: string): Promise<boolean> {
+async function ensureTorRunning(): Promise<boolean> {
+  // Check if Tor SOCKS port is already listening (try multiple detection methods)
+  const portOpen = await checkPort9050();
+  if (portOpen) {
+    console.log("[Polymarket] Tor already running on :9050");
+    return true;
+  }
+
+  // Write torrc config with EU exit nodes
   try {
-    const agent = new HttpsProxyAgent(proxyUrl);
-    const resp = await axios.post("https://clob.polymarket.com/order", {}, {
-      timeout: 6000,
+    execSync(`mkdir -p /tmp/tor-data && cat > /tmp/torrc << 'TORRC'
+SocksPort 9050
+DataDirectory /tmp/tor-data
+ExitNodes {de},{nl},{gb},{fr},{ch},{at},{be},{ie},{se},{no},{dk},{fi}
+StrictNodes 1
+CircuitBuildTimeout 30
+LearnCircuitBuildTimeout 0
+TORRC`);
+  } catch {
+    console.warn("[Polymarket] Could not write torrc");
+    return false;
+  }
+
+  // Start Tor in background  
+  console.log("[Polymarket] Starting Tor...");
+  try {
+    _torProcess = spawn("tor", ["-f", "/tmp/torrc"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    _torProcess.unref();
+  } catch {
+    // Try with sudo
+    try {
+      _torProcess = spawn("sudo", ["tor", "-f", "/tmp/torrc"], {
+        stdio: "ignore",
+        detached: true,
+      });
+      _torProcess.unref();
+    } catch {
+      console.warn("[Polymarket] Cannot start Tor — not installed?");
+      console.warn("[Polymarket] Install: sudo apt-get install -y tor");
+      return false;
+    }
+  }
+
+  // Wait for Tor to bootstrap (up to 30s)
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    const ready = await checkPort9050();
+    if (ready) {
+      console.log(`[Polymarket] Tor bootstrapped in ~${(i + 1) * 2}s`);
+      return true;
+    }
+  }
+
+  console.warn("[Polymarket] Tor failed to bootstrap within 30s");
+  return false;
+}
+
+/**
+ * Check if port 9050 (Tor SOCKS) is open using Node.js net module.
+ */
+function checkPort9050(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const net = require("net") as typeof import("net");
+    const sock = net.createConnection({ host: "127.0.0.1", port: 9050 }, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => resolve(false));
+    sock.setTimeout(2000, () => { sock.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Test a SOCKS5 proxy against Polymarket CLOB.
+ */
+async function testSocksProxy(socksUrl: string): Promise<boolean> {
+  try {
+    const agent = new SocksProxyAgent(socksUrl);
+    await axios.post("https://clob.polymarket.com/order", {}, {
+      timeout: 15000,
       httpsAgent: agent,
       httpAgent: agent,
       proxy: false,
     });
-    return true; // No error = not blocked
+    return true;
   } catch (err: any) {
-    const errMsg = err.response?.data?.error || err.message || "";
-    // If we get an auth error (not geoblock), the proxy works!
-    if (errMsg.includes("geoblock") || errMsg.includes("Trading restricted")) {
-      console.log(`  ✗ ${proxyUrl} — still geoblocked`);
-      return false;
-    }
-    if (err.response?.status === 400 || err.response?.status === 401 || err.response?.status === 403) {
-      // Got a real API error = proxy works (not geoblocked), order just needs auth
-      console.log(`  ✓ ${proxyUrl} — proxy works! (got auth error, not geoblock)`);
-      return true;
-    }
-    if (err.code === "ECONNREFUSED" || err.code === "ETIMEDOUT" || err.code === "ECONNABORTED" || err.code === "ENOTFOUND") {
-      console.log(`  ✗ ${proxyUrl} — connection failed`);
-      return false;
-    }
-    // Unknown error — might work
-    console.log(`  ? ${proxyUrl} — unknown response: ${errMsg.substring(0, 80)}`);
+    const msg = err.response?.data?.error || err.message || "";
+    if (msg.includes("geoblock") || msg.includes("restricted")) return false;
+    if (err.response?.status && err.response.status >= 400) return true; // Auth error = not blocked
     return false;
   }
 }
 
 /**
- * Activate a proxy for all Polymarket CLOB requests.
- * Sets env vars, patches axios defaults, and monkey-patches axios.create
- * so ClobClient's internal HTTP calls route through the proxy.
+ * Test an HTTP/HTTPS proxy against Polymarket CLOB.
  */
-function activateProxy(proxyUrl: string): void {
-  _proxyUrl = proxyUrl;
-  _proxyAgent = new HttpsProxyAgent<string>(proxyUrl);
-  
-  // Set environment variables — many HTTP libs respect these
-  process.env.HTTP_PROXY = proxyUrl;
-  process.env.HTTPS_PROXY = proxyUrl;
-  process.env.http_proxy = proxyUrl;
-  process.env.https_proxy = proxyUrl;
-  
+async function testHttpProxy(proxyUrl: string): Promise<boolean> {
+  try {
+    const agent = new HttpsProxyAgent(proxyUrl);
+    await axios.post("https://clob.polymarket.com/order", {}, {
+      timeout: 8000,
+      httpsAgent: agent,
+      httpAgent: agent,
+      proxy: false,
+    });
+    return true;
+  } catch (err: any) {
+    const msg = err.response?.data?.error || err.message || "";
+    if (msg.includes("geoblock") || msg.includes("restricted")) return false;
+    if (err.response?.status && err.response.status >= 400) return true;
+    return false;
+  }
+}
+
+/**
+ * Activate a SOCKS5 proxy (e.g., Tor) for all Polymarket CLOB requests.
+ */
+function activateSocksProxy(socksUrl: string): void {
+  _proxyUrl = socksUrl;
+  _proxyAgent = new SocksProxyAgent(socksUrl);
+
   // Patch axios defaults
   axios.defaults.httpsAgent = _proxyAgent;
   axios.defaults.httpAgent = _proxyAgent;
   axios.defaults.proxy = false;
-  
-  // Monkey-patch axios.create to inject proxy agent into all new instances
-  // This ensures ClobClient's internal axios instance uses our proxy
+
+  // Monkey-patch axios.create for ClobClient's internal axios
   const originalCreate = axios.create.bind(axios);
   axios.create = function patchedCreate(config?: any) {
-    const instance = originalCreate({
+    return originalCreate({
       ...config,
       httpsAgent: _proxyAgent,
       httpAgent: _proxyAgent,
       proxy: false,
     });
-    return instance;
   } as any;
-  
-  // Try patching global agents (may fail in ESM mode, that's OK)
-  try { (https as any).globalAgent = _proxyAgent; } catch { /* read-only in ESM */ }
-  try { (http as any).globalAgent = _proxyAgent; } catch { /* read-only in ESM */ }
-  
-  console.log(`[Polymarket] ✓ Proxy ACTIVATED: ${proxyUrl}`);
-  console.log(`[Polymarket]   HTTP_PROXY=${proxyUrl}`);
+
+  try { (https as any).globalAgent = _proxyAgent; } catch {}
+  try { (http as any).globalAgent = _proxyAgent; } catch {}
+
+  console.log(`[Polymarket] ✓ SOCKS proxy ACTIVATED: ${socksUrl}`);
+}
+
+/**
+ * Activate an HTTP/HTTPS proxy for all Polymarket CLOB requests.
+ */
+function activateHttpProxy(proxyUrl: string): void {
+  _proxyUrl = proxyUrl;
+  _proxyAgent = new HttpsProxyAgent<string>(proxyUrl) as any;
+
+  process.env.HTTP_PROXY = proxyUrl;
+  process.env.HTTPS_PROXY = proxyUrl;
+
+  axios.defaults.httpsAgent = _proxyAgent;
+  axios.defaults.httpAgent = _proxyAgent;
+  axios.defaults.proxy = false;
+
+  const originalCreate = axios.create.bind(axios);
+  axios.create = function patchedCreate(config?: any) {
+    return originalCreate({
+      ...config,
+      httpsAgent: _proxyAgent,
+      httpAgent: _proxyAgent,
+      proxy: false,
+    });
+  } as any;
+
+  try { (https as any).globalAgent = _proxyAgent; } catch {}
+  try { (http as any).globalAgent = _proxyAgent; } catch {}
+
+  console.log(`[Polymarket] ✓ HTTP proxy ACTIVATED: ${proxyUrl}`);
 }
 
 /** Check if we're currently geoblocked (with no working proxy). */
