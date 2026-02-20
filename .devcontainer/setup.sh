@@ -16,8 +16,12 @@ echo "✅ Build complete"
 # 2. Restore ~/.automaton/ from Codespaces Secrets
 mkdir -p ~/.automaton
 
-# Wallet (from AUTOMATON_WALLET_KEY secret)
-if [ -n "$AUTOMATON_WALLET_KEY" ]; then
+# Wallet (from AUTOMATON_WALLET secret — full wallet.json content)
+if [ -n "$AUTOMATON_WALLET" ]; then
+  echo "$AUTOMATON_WALLET" > ~/.automaton/wallet.json
+  chmod 600 ~/.automaton/wallet.json
+  echo "✅ Wallet restored"
+elif [ -n "$AUTOMATON_WALLET_KEY" ]; then
   cat > ~/.automaton/wallet.json << WALLET_EOF
 {
   "privateKey": "$AUTOMATON_WALLET_KEY",
@@ -25,23 +29,27 @@ if [ -n "$AUTOMATON_WALLET_KEY" ]; then
 }
 WALLET_EOF
   chmod 600 ~/.automaton/wallet.json
-  echo "✅ Wallet restored"
+  echo "✅ Wallet restored (from KEY)"
 else
-  echo "⚠️ AUTOMATON_WALLET_KEY secret not set — wallet not restored"
+  echo "⚠️ AUTOMATON_WALLET secret not set — wallet not restored"
   echo "   Set it at: https://github.com/settings/codespaces"
 fi
 
-# Config (from AUTOMATON_CONFIG secret — base64-encoded automaton.json)
+# Config (from AUTOMATON_CONFIG secret — plain JSON automaton.json)
 if [ -n "$AUTOMATON_CONFIG" ]; then
-  echo "$AUTOMATON_CONFIG" | base64 -d > ~/.automaton/automaton.json
+  echo "$AUTOMATON_CONFIG" > ~/.automaton/automaton.json
   chmod 600 ~/.automaton/automaton.json
   echo "✅ Config restored"
 else
   echo "⚠️ AUTOMATON_CONFIG secret not set — config not restored"
 fi
 
-# Heartbeat config
-cat > ~/.automaton/heartbeat.yml << 'HB_EOF'
+# Heartbeat (from AUTOMATON_HEARTBEAT secret or default)
+if [ -n "$AUTOMATON_HEARTBEAT" ]; then
+  echo "$AUTOMATON_HEARTBEAT" > ~/.automaton/heartbeat.yml
+  echo "✅ Heartbeat restored from secret"
+else
+  cat > ~/.automaton/heartbeat.yml << 'HB_EOF'
 entries:
   - name: heartbeat_ping
     schedule: "*/15 * * * *"
@@ -90,7 +98,8 @@ entries:
 defaultIntervalMs: 60000
 lowComputeMultiplier: 4
 HB_EOF
-echo "✅ Heartbeat config written"
+  echo "✅ Heartbeat config written (default)"
+fi
 
 echo ""
 echo "=== Setup Complete ==="
