@@ -9,7 +9,6 @@
  */
 
 import type { AutomatonDatabase } from "../types.js";
-import { TradingLogger } from "./trading-logger.js";
 import {
   getOrCreateClobClient,
   resetClobClient,
@@ -24,6 +23,7 @@ import {
   getActiveProxy,
   type ParsedMarket,
 } from "./polymarket-client.js";
+import { getUsdcBalance } from "../conway/x402.js";
 
 // ─── Types ─────────────────────────────────────────────────────
 
@@ -100,7 +100,7 @@ let portfolio: Portfolio = {
   winRate: 0,
 };
 
-let logger: TradingLogger | null = null;
+let logger: any = null;
 let database: AutomatonDatabase | null = null;
 let walletPrivateKey: string | null = null;
 let walletAddress: string | null = null;
@@ -111,7 +111,7 @@ let _lastScannedMarkets: Market[] = [];
 
 // Weather cache
 const weatherCache = new Map<string, { data: WeatherData; expiry: number }>();
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 2 * 60 * 1000; // 2 min cache (hustle mode)
 
 // ─── Initialization ────────────────────────────────────────────
 
@@ -121,12 +121,12 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
  */
 export function initializePolymarket(
   db: AutomatonDatabase,
-  log?: TradingLogger,
+  log?: any,
   privateKey?: string,
   address?: string,
 ): void {
   database = db;
-  logger = log || new TradingLogger();
+  logger = log || null;
   if (privateKey) walletPrivateKey = privateKey;
   if (address) walletAddress = address;
 
@@ -144,6 +144,8 @@ export function initializePolymarket(
   console.log("[Polymarket] Initialized with REAL trading (Gamma + CLOB APIs)");
   if (walletAddress) {
     console.log(`[Polymarket] Wallet: ${walletAddress}`);
+    // Store wallet address in DB so other modules (auto-bet verify, dashboard sync) can use it
+    try { db.setKV?.("wallet_address", walletAddress); } catch {}
   }
 }
 
@@ -368,7 +370,7 @@ export async function scanPolymarketMarkets(
         closed: false,
         fastResolving: true,
         maxHoursToEnd: 24, // 24h window — tightest deadline = biggest opportunity
-        minVolume24hr: 200, // lower threshold to find more near-expiry markets
+        minVolume24hr: 50, // LOW threshold to find hidden gems with mispricing
       });
 
       if (realMarkets.length < 3) {
@@ -380,7 +382,7 @@ export async function scanPolymarketMarkets(
           closed: false,
           fastResolving: true,
           maxHoursToEnd: 48,
-          minVolume24hr: 200,
+          minVolume24hr: 50, // Hidden gems — low volume = less efficient pricing
         });
         // Deduplicate by ID
         const existingIds = new Set(realMarkets.map(m => m.id));
@@ -388,10 +390,10 @@ export async function scanPolymarketMarkets(
       }
 
       if (realMarkets.length < 3) {
-        // Expand to 7 days
+        // Expand to 7 days — also look for hidden gems
         const more = await fetchGammaMarkets({
           limit: 50,
-          minVolume24hr: 100,
+          minVolume24hr: 30, // Very low volume = market inefficiency = alpha
           active: true,
           closed: false,
           fastResolving: true,
@@ -544,18 +546,18 @@ export function calculateEdge(
   if (liquidityOk) confidence += 5;
   confidence = Math.min(99, Math.round(confidence));
 
-  // ── Recommendation ──
+  // ── Recommendation ── (AGGRESSIVE: lower thresholds for 24hr profit deadline)
   let recommendation: "strong_buy" | "buy" | "hold" | "skip";
-  if (adjustedEdge >= 0.08 && confidence >= 70) recommendation = "strong_buy";
-  else if (adjustedEdge >= 0.04 && confidence >= 60) recommendation = "buy";
-  else if (adjustedEdge >= minEdge) recommendation = "hold";
+  if (adjustedEdge >= 0.06 && confidence >= 65) recommendation = "strong_buy";
+  else if (adjustedEdge >= 0.03 && confidence >= 55) recommendation = "buy";
+  else if (adjustedEdge >= 0.01) recommendation = "hold";
   else recommendation = "skip";
 
-  // For fast-resolving markets, lower the bar (edge compounds near expiry)
-  if (hoursToEnd <= 24 && rawEdge >= 0.02 && recommendation === "skip") recommendation = "hold";
-  if (hoursToEnd <= 24 && rawEdge >= 0.03 && recommendation === "hold") recommendation = "buy";
-  if (hoursToEnd <= 12 && rawEdge >= 0.02) recommendation = "buy";
-  if (hoursToEnd <= 6 && rawEdge >= 0.02) recommendation = "strong_buy";
+  // For fast-resolving markets, ALWAYS be aggressive (edge compounds near expiry)
+  if (hoursToEnd <= 24 && rawEdge >= 0.01 && recommendation === "skip") recommendation = "hold";
+  if (hoursToEnd <= 24 && rawEdge >= 0.02 && recommendation === "hold") recommendation = "buy";
+  if (hoursToEnd <= 12 && rawEdge >= 0.01) recommendation = "buy";
+  if (hoursToEnd <= 6 && rawEdge >= 0.01) recommendation = "strong_buy";
 
   const superAnalysis = {
     hours_to_resolution: Math.round(hoursToEnd * 10) / 10,
@@ -583,25 +585,28 @@ export function calculateEdge(
 
 // ─── Risk Management ───────────────────────────────────────────
 
-/** HARD CAP: Maximum $1.00 per trade. Immutable. */
-const HARD_MAX_BET_USD = 1.00;
+/** HARD CAP: Maximum $3.00 per trade (Polymarket minimum is 5 shares). */
+const HARD_MAX_BET_USD = 3.00;
+
+/** Minimum USDC.e balance to even attempt a trade (5 shares × ~$0.05 min price = $0.25). */
+const MIN_TRADE_BALANCE = 0.50;
 
 export function canMakeTrade(amountUsd: number): { allowed: boolean; reason?: string } {
-  // HARD CAP enforcement — never exceed $1.00 per trade
+  // HARD CAP enforcement — never exceed $3.00 per trade
   if (amountUsd > HARD_MAX_BET_USD) {
     return {
       allowed: false,
-      reason: `HARD CAP: Trade size $${amountUsd} exceeds maximum $${HARD_MAX_BET_USD.toFixed(2)} per trade. Use amount_usd: 1.00 or less.`,
+      reason: `HARD CAP: Trade size $${amountUsd} exceeds maximum $${HARD_MAX_BET_USD.toFixed(2)} per trade. Use amount_usd: 3.00 or less.`,
     };
   }
-  if (amountUsd > portfolio.currentBalance) {
+  if (amountUsd > portfolio.currentBalance && portfolio.currentBalance > 0) {
     return { allowed: false, reason: `Insufficient balance: $${portfolio.currentBalance.toFixed(2)}` };
   }
-  if (portfolio.trades24h >= 10) {
-    return { allowed: false, reason: `Max 10 trades per day reached` };
+  if (portfolio.trades24h >= 25) {
+    return { allowed: false, reason: `Max 25 trades per day reached` };
   }
-  if (portfolio.positionsOpen >= 10) {
-    return { allowed: false, reason: `Max 10 concurrent positions reached` };
+  if (portfolio.positionsOpen >= 15) {
+    return { allowed: false, reason: `Max 15 concurrent positions reached` };
   }
   return { allowed: true };
 }
@@ -652,6 +657,8 @@ export async function placeBet(
   try {
     let orderId: string | undefined;
     let livePrice = entryPrice;
+    let _lastOrderCost = 0;   // actual cost = shares × price
+    let _lastOrderShares = 0; // actual shares placed
 
     if (isRealTrade && walletPrivateKey) {
       await ensureClobClient();
@@ -673,7 +680,33 @@ export async function placeBet(
       console.log(
         `[Polymarket] Placing REAL ${side} order: $${amountUsd} @ ${price.toFixed(4)} on "${market.title}"`,
       );
-      const orderResult = await placeLimitOrder(clobClient, tokenId!, "BUY", price, amountUsd);
+      
+      // CLOB size is in shares (not dollars). shares = amountUsd / price
+      // Polymarket minimum order size is 5 shares
+      let orderSize = Math.floor(amountUsd / price);
+      if (orderSize < 5) orderSize = 5; // minimum 5 shares
+      const orderCost = orderSize * price;
+      _lastOrderCost = orderCost;
+      _lastOrderShares = orderSize;
+      console.log(`[Polymarket] Order: ${orderSize} shares @ ${price.toFixed(4)} = $${orderCost.toFixed(2)}`);
+
+      // ── Balance check: don't place order if wallet can't cover it ──
+      if (walletAddress) {
+        try {
+          const usdcBal = await getUsdcBalance(walletAddress as `0x${string}`, "eip155:137");
+          console.log(`[Polymarket] On-chain USDC.e balance: $${usdcBal.toFixed(4)}`);
+          if (usdcBal < orderCost) {
+            const msg = `INSUFFICIENT BALANCE: Need $${orderCost.toFixed(2)} but wallet only has $${usdcBal.toFixed(2)} USDC.e. Do NOT retry — go to sleep instead.`;
+            console.warn(`[Polymarket] ${msg}`);
+            logger?.logError("trade", msg);
+            return { success: false, error: msg };
+          }
+        } catch (balErr: any) {
+          console.warn(`[Polymarket] Could not check balance: ${balErr.message}, proceeding anyway`);
+        }
+      }
+
+      const orderResult = await placeLimitOrder(clobClient, tokenId!, "BUY", price, orderSize);
 
       if (!orderResult.success) {
         logger?.logError("trade", `Order failed: ${orderResult.error}`);
@@ -689,17 +722,22 @@ export async function placeBet(
 
     const positionId =
       orderId || `pos_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const shares = amountUsd / livePrice;
+
+    // Use actual order cost (shares × price) for real trades, not the requested amountUsd
+    // Because Polymarket enforces a minimum of 5 shares, actual cost may differ
+    const actualCost = _lastOrderCost > 0 ? _lastOrderCost : amountUsd;
+    const actualShares = _lastOrderShares > 0 ? _lastOrderShares : amountUsd / livePrice;
+    const shares = actualShares;
     const targetPrice = livePrice * (side === "YES" ? 1.08 : 0.92);
     const stoplossPrice = livePrice * (side === "YES" ? 0.95 : 1.05);
 
     // Update portfolio
-    portfolio.currentBalance -= amountUsd;
+    portfolio.currentBalance -= actualCost;
     portfolio.positionsOpen += 1;
     portfolio.trades24h += 1;
     savePortfolioState();
 
-    // Store in database
+    // Store in database — use ACTUAL cost, not requested amount
     if (database) {
       database.insertPMPosition(
         positionId,
@@ -707,15 +745,19 @@ export async function placeBet(
         market.title,
         side,
         livePrice,
-        amountUsd,
+        actualCost,
         targetPrice,
         stoplossPrice,
+        market.yesTokenId,
+        market.noTokenId,
+        market.deadline,
+        shares,
       );
     }
 
-    logger?.logBetPlaced(market.title, side, amountUsd, livePrice, targetPrice, stoplossPrice);
+    logger?.logBetPlaced(market.title, side, actualCost, livePrice, targetPrice, stoplossPrice);
     console.log(
-      `[BET PLACED] ${isRealTrade ? "REAL" : "PAPER"} ${side} on "${market.title}" - $${amountUsd} @ ${livePrice.toFixed(4)}`,
+      `[BET PLACED] ${isRealTrade ? "REAL" : "PAPER"} ${side} on "${market.title}" - $${actualCost.toFixed(2)} (${shares} shares @ ${livePrice.toFixed(4)})`,
     );
 
     return {
@@ -726,7 +768,7 @@ export async function placeBet(
         side,
         entryPrice: livePrice,
         shares,
-        amountUsd,
+        amountUsd: actualCost,
         orderId,
         tokenId: tokenId || undefined,
         entryTime: new Date().toISOString(),

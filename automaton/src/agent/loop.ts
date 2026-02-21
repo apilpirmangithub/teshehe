@@ -128,6 +128,8 @@ export async function runAgentLoop(
       const sleepUntil = db.getKV("sleep_until");
       if (sleepUntil && new Date(sleepUntil) > new Date()) {
         log(config, `[SLEEP] Sleeping until ${sleepUntil}`);
+        db.setAgentState("sleeping");
+        onStateChange?.("sleeping");
         running = false;
         break;
       }
@@ -282,6 +284,15 @@ export async function runAgentLoop(
         break;
       }
 
+      // ── Check if a tool (e.g. pm_scan_markets) auto-set sleeping state ──
+      if (db.getAgentState() === "sleeping") {
+        const autoReason = db.getKV("sleep_reason") || "auto-sleep by tool";
+        log(config, `[AUTO-SLEEP] Tool triggered sleep: ${autoReason}`);
+        onStateChange?.("sleeping");
+        running = false;
+        break;
+      }
+
       // ── If no tool calls and just text, force sleep immediately ──
       if (
         (!response.toolCalls || response.toolCalls.length === 0) &&
@@ -289,7 +300,7 @@ export async function runAgentLoop(
       ) {
         consecutiveIdleTurns++;
         // Agent wasted a turn producing text without tools — panic loop detected
-        const idleSleepMs = 5 * 60_000; // 5 minutes — punish idle turns
+        const idleSleepMs = 90_000; // 90 seconds — wake up fast, hustle for profit
         log(config, `[IDLE] No tool calls (idle streak: ${consecutiveIdleTurns}). Sleeping ${Math.round(idleSleepMs / 60_000)}m to conserve credits.`);
         db.setKV(
           "sleep_until",

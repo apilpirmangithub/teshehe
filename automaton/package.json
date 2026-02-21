@@ -43,6 +43,7 @@
     "clean": "rm -rf dist && pnpm -r clean"
   },
   "dependencies": {
+    "@ethersproject/contracts": "^5.8.0",
     "@ethersproject/providers": "^5.8.0",
     "@ethersproject/wallet": "^5.8.0",
     "@polymarket/clob-client": "^5.2.4",

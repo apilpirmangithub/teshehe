@@ -21,6 +21,7 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 import axios from "axios";
 import * as https from "https";
 import * as http from "http";
+import * as net from "net";
 import { execSync, spawn, type ChildProcess } from "child_process";
 
 // ─── Geoblock Detection & Proxy System ────────────────────────
@@ -187,7 +188,6 @@ TORRC`);
  */
 function checkPort9050(): Promise<boolean> {
   return new Promise((resolve) => {
-    const net = require("net") as typeof import("net");
     const sock = net.createConnection({ host: "127.0.0.1", port: 9050 }, () => {
       sock.destroy();
       resolve(true);
@@ -246,20 +246,57 @@ function activateSocksProxy(socksUrl: string): void {
   _proxyUrl = socksUrl;
   _proxyAgent = new SocksProxyAgent(socksUrl);
 
-  // Patch axios defaults
-  axios.defaults.httpsAgent = _proxyAgent;
-  axios.defaults.httpAgent = _proxyAgent;
-  axios.defaults.proxy = false;
+  // Use interceptors to inject agent into requests
+  // (avoids putting agent in defaults which could be serialized)
+  axios.interceptors.request.use((config: any) => {
+    config.httpsAgent = _proxyAgent;
+    config.httpAgent = _proxyAgent;
+    config.proxy = false;
+    return config;
+  });
+
+  // Response error interceptor: strip agent from error configs
+  // to prevent "Converting circular structure to JSON" in ClobClient error handler
+  axios.interceptors.response.use(
+    (response: any) => response,
+    (error: any) => {
+      if (error?.response?.config) {
+        delete error.response.config.httpsAgent;
+        delete error.response.config.httpAgent;
+      }
+      if (error?.config) {
+        delete error.config.httpsAgent;
+        delete error.config.httpAgent;
+      }
+      return Promise.reject(error);
+    }
+  );
 
   // Monkey-patch axios.create for ClobClient's internal axios
   const originalCreate = axios.create.bind(axios);
   axios.create = function patchedCreate(config?: any) {
-    return originalCreate({
-      ...config,
-      httpsAgent: _proxyAgent,
-      httpAgent: _proxyAgent,
-      proxy: false,
+    const instance = originalCreate(config);
+    instance.interceptors.request.use((reqConfig: any) => {
+      reqConfig.httpsAgent = _proxyAgent;
+      reqConfig.httpAgent = _proxyAgent;
+      reqConfig.proxy = false;
+      return reqConfig;
     });
+    instance.interceptors.response.use(
+      (response: any) => response,
+      (error: any) => {
+        if (error?.response?.config) {
+          delete error.response.config.httpsAgent;
+          delete error.response.config.httpAgent;
+        }
+        if (error?.config) {
+          delete error.config.httpsAgent;
+          delete error.config.httpAgent;
+        }
+        return Promise.reject(error);
+      }
+    );
+    return instance;
   } as any;
 
   try { (https as any).globalAgent = _proxyAgent; } catch {}
@@ -461,6 +498,56 @@ export function getPublicClobClient(): ClobClient {
 // ─── Market Discovery (Gamma API) ─────────────────────────────
 
 /**
+ * Fetch a single market by Gamma ID. Returns parsed market with live prices + token IDs.
+ */
+export async function fetchMarketById(marketId: string): Promise<ParsedMarket | null> {
+  try {
+    const url = `${GAMMA_API}/markets/${marketId}`;
+    const response = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!response.ok) return null;
+    const m: GammaMarket = await response.json();
+
+    let yesPrice = 0.5, noPrice = 0.5;
+    try {
+      const p = JSON.parse(m.outcomePrices);
+      yesPrice = parseFloat(p[0]) || 0.5;
+      noPrice = parseFloat(p[1]) || 0.5;
+    } catch {}
+
+    let yesTokenId = "", noTokenId = "";
+    try {
+      const t = JSON.parse(m.clobTokenIds);
+      yesTokenId = t[0] || "";
+      noTokenId = t[1] || "";
+    } catch {}
+
+    return {
+      id: m.id,
+      question: m.question,
+      slug: m.slug,
+      conditionId: m.conditionId,
+      yesTokenId,
+      noTokenId,
+      yesPrice,
+      noPrice,
+      volume24hr: m.volume24hr || 0,
+      totalVolume: m.volumeNum || 0,
+      liquidity: m.liquidityNum || 0,
+      endDate: m.endDate,
+      category: m.category || "",
+      description: m.description || "",
+      tickSize: m.orderPriceMinTickSize || 0.01,
+      minOrderSize: m.orderMinSize || 5,
+      active: m.active,
+      closed: m.closed,
+      restricted: m.restricted,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch active, open markets from the Gamma API.
  * Supports filtering by keyword, category, and minimum volume.
  */
@@ -644,6 +731,10 @@ export async function searchGammaMarkets(query: string, limit: number = 10): Pro
 export async function getMidpoint(tokenId: string): Promise<number> {
   const client = getPublicClobClient();
   const mid = await client.getMidpoint(tokenId);
+  // CLOB client returns { mid: "0.395" } object, not a number
+  if (mid && typeof mid === "object" && "mid" in mid) {
+    return parseFloat(String((mid as any).mid));
+  }
   return parseFloat(String(mid));
 }
 
@@ -661,6 +752,10 @@ export async function getOrderBook(tokenId: string) {
 export async function getLastTradePrice(tokenId: string): Promise<number> {
   const client = getPublicClobClient();
   const p = await client.getLastTradePrice(tokenId);
+  // CLOB client may return { price: "0.395" } object
+  if (p && typeof p === "object" && "price" in p) {
+    return parseFloat(String((p as any).price));
+  }
   return parseFloat(String(p));
 }
 

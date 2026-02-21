@@ -221,16 +221,93 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     const lastScanTime = lastScan ? new Date(lastScan).getTime() : 0;
     const minutesSinceLastScan = (Date.now() - lastScanTime) / 60_000;
 
-    // Only wake every 10 minutes for active trading
-    if (minutesSinceLastScan < 10) {
+    // Wake every 3 minutes for aggressive trading (hustle mode)
+    if (minutesSinceLastScan < 3) {
       return { shouldWake: false };
     }
 
-    // NOTE: Do NOT set last_pm_scan_time here — only pm_scan_markets tool sets it
-    // after the actual scan runs and populates the market cache
+    // ── SMART ROUTING: Check BOTH chains, pick BEST opportunity ──
+    let polygonBal = -1;
+    let baseBal = -1;
+    try {
+      const { getUsdcBalance } = await import("../conway/x402.js");
+      const walletAddr = ctx.db.getKV("wallet_address") || ctx.db.getIdentity?.("address") || "";
+      if (walletAddr) {
+        const addr = walletAddr as `0x${string}`;
+        [polygonBal, baseBal] = await Promise.all([
+          getUsdcBalance(addr, "eip155:137").catch(() => -1),
+          getUsdcBalance(addr, "eip155:8453").catch(() => -1),
+        ]);
+      }
+    } catch {}
+
+    // Count open positions on each chain
+    let pmOpenCount = 0;
+    let scalpOpenCount = 0;
+    let perpOpen = false;
+    try { pmOpenCount = parseInt(ctx.db.getKV("pm_open_positions_count") || "0", 10); } catch {}
+    try {
+      const pp = JSON.parse(ctx.db.getKV("perp_positions") || "[]");
+      scalpOpenCount = pp.filter((p: any) => p.status === "open" || p.status === "pending").length;
+      perpOpen = scalpOpenCount > 0;
+    } catch {}
+
+    const polymarketReady = polygonBal >= 0.50;
+    const scalpReady = baseBal >= 0.10 || perpOpen; // perp position open = must manage
+    const lastType = ctx.db.getKV("last_scan_type") || "";
+
+    // ── Decision matrix: SCALP now includes leveraged ETH + altcoins ──
+    let choice: "polymarket" | "scalp" = "scalp";
+    let reason = "";
+
+    if (!polymarketReady && !scalpReady) {
+      choice = "scalp";
+      reason = `⚠️ All chains low (Polygon $${polygonBal >= 0 ? polygonBal.toFixed(2) : "?"}, Base $${baseBal >= 0 ? baseBal.toFixed(2) : "?"}). Trying scalp_scan for micro opportunity.`;
+    } else if (!polymarketReady && scalpReady) {
+      choice = "scalp";
+      reason = `💰 Polygon low → Base $${baseBal >= 0 ? baseBal.toFixed(2) : "?"} perp scalping${perpOpen ? " (⚡ perp position open!)" : ""}.`;
+    } else if (polymarketReady && !scalpReady) {
+      choice = "polymarket";
+      reason = `💰 Base too low → Polygon $${polygonBal >= 0 ? polygonBal.toFixed(2) : "?"} Polymarket.`;
+    } else {
+      // ALL ready — score each strategy
+      const pmScore =
+        (polygonBal >= 0 ? Math.min(polygonBal, 3) : 0) * 1.0 +
+        Math.max(0, 3 - pmOpenCount) * 0.5 +
+        (lastType === "scalp" ? 1.5 : 0);
+
+      const scScore =
+        (baseBal >= 0 ? Math.min(baseBal, 5) : 0) * 1.0 +
+        Math.max(0, 2 - scalpOpenCount) * 0.8 +
+        (perpOpen ? 3.0 : 0) +                                    // must check open perp position!
+        (lastType === "polymarket" || lastType === "" ? 1.5 : 0);
+
+      // If leverage position is open, ALWAYS go to scalp (scalp_scan manages leverage)
+      if (perpOpen) {
+        choice = "scalp";
+        reason = `🔒 Open perp position → must monitor via scalp_scan. Sc ${scScore.toFixed(1)} vs PM ${pmScore.toFixed(1)}`;
+      } else if (pmScore >= scScore) {
+        choice = "polymarket";
+        reason = `🧠 Smart pick: PM ${pmScore.toFixed(1)} vs Sc ${scScore.toFixed(1)} (Polygon $${polygonBal.toFixed(2)}/${pmOpenCount} pos)`;
+      } else {
+        choice = "scalp";
+        reason = `🧠 Smart pick: Sc ${scScore.toFixed(1)} vs PM ${pmScore.toFixed(1)} (Base $${baseBal.toFixed(2)}/${scalpOpenCount} pos)`;
+      }
+    }
+
+    console.log(`[HEARTBEAT] ${reason} → ${choice}`);
+
+    // Store the decision so tools can enforce it if LLM disobeys
+    try { ctx.db.setKV("next_best_opportunity", choice); } catch {}
+
+    const toolMap = {
+      polymarket: `⚡ BEST OPPORTUNITY → POLYMARKET: ${reason}. Call pm_scan_markets({"fast_resolving": true}). Then sleep 2min.`,
+      scalp: `🔥 BEST OPPORTUNITY → SCALP: ${reason}. Call scalp_scan(). Then sleep 2min.`,
+    };
+
     return {
       shouldWake: true,
-      message: "Scan Polymarket: pm_scan_markets → pm_calculate_edge → pm_place_bet. Edge threshold: 3%. Be bold with forecasts!",
+      message: toolMap[choice],
     };
   },
 

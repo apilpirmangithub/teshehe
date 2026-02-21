@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@ethersproject/contracts':
+        specifier: ^5.8.0
+        version: 5.8.0
       '@ethersproject/providers':
         specifier: ^5.8.0
         version: 5.8.0

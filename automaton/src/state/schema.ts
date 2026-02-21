@@ -5,7 +5,7 @@
  * The database IS the automaton's memory.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const CREATE_TABLES = `
   -- Schema version tracking
@@ -314,4 +314,12 @@ export const MIGRATION_V2 = `
   CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(enabled);
   CREATE INDEX IF NOT EXISTS idx_children_status ON children(status);
   CREATE INDEX IF NOT EXISTS idx_reputation_to ON reputation(to_agent);
+`;
+
+export const MIGRATION_V5 = `
+  -- Add token IDs and deadline to pm_positions for live price tracking
+  ALTER TABLE pm_positions ADD COLUMN yes_token_id TEXT;
+  ALTER TABLE pm_positions ADD COLUMN no_token_id TEXT;
+  ALTER TABLE pm_positions ADD COLUMN deadline TEXT;
+  ALTER TABLE pm_positions ADD COLUMN shares REAL;
 `;

@@ -42,7 +42,8 @@ Conway Automaton v${VERSION}
 Sovereign AI Agent Runtime
 
 Usage:
-  automaton --run          Start the automaton (first run triggers setup wizard)
+  automaton --run          Start the automaton (shows dashboard first)
+  automaton --dashboard    Show live trading dashboard (auto-refresh)
   automaton --setup        Re-run the interactive setup wizard
   automaton --init         Initialize wallet and config directory
   automaton --provision    Provision Conway API key via SIWE
@@ -88,6 +89,11 @@ Environment:
   if (args.includes("--setup")) {
     const { runSetupWizard } = await import("./setup/wizard.js");
     await runSetupWizard();
+    process.exit(0);
+  }
+
+  if (args.includes("--dashboard")) {
+    await runDashboard(args.includes("--live"));
     process.exit(0);
   }
 
@@ -142,6 +148,30 @@ Version:    ${config.version}
   db.close();
 }
 
+// ─── Dashboard Command ─────────────────────────────────────────
+
+async function runDashboard(live: boolean = false): Promise<void> {
+  const config = loadConfig();
+  if (!config) {
+    console.log("Automaton is not configured. Run the setup script first.");
+    return;
+  }
+
+  const dbPath = resolvePath(config.dbPath);
+  const db = createDatabase(dbPath);
+  const walletAddress = config.walletAddress;
+
+  const { showDashboard, showLiveDashboard } = await import("./dashboard/dashboard.js");
+
+  if (live) {
+    await showLiveDashboard({ db, config, walletAddress, refreshInterval: 30 });
+  } else {
+    await showDashboard({ db, config, walletAddress });
+  }
+
+  db.close();
+}
+
 // ─── Main Run ──────────────────────────────────────────────────
 
 async function run(): Promise<void> {
@@ -184,6 +214,17 @@ async function run(): Promise<void> {
   db.setIdentity("address", account.address);
   db.setIdentity("creator", config.creatorAddress);
   db.setIdentity("sandbox", config.sandboxId);
+
+  // Store wallet address in KV for heartbeat tasks (balance checks)
+  db.setKV("wallet_address", account.address);
+
+  // ─── Show Trading Dashboard at Startup ───────────────────────
+  try {
+    const { showDashboard } = await import("./dashboard/dashboard.js");
+    await showDashboard({ db, config, walletAddress: account.address });
+  } catch (err: any) {
+    console.warn(`[${new Date().toISOString()}] Dashboard skipped: ${err.message}`);
+  }
 
   // Create Conway client
   const conway = createConwayClient({
@@ -299,7 +340,7 @@ async function run(): Promise<void> {
         console.log(`[${new Date().toISOString()}] Automaton is dead. Heartbeat will continue.`);
         // In dead state, we just wait for funding
         // The heartbeat will keep checking and broadcasting distress
-        await sleep(300_000); // Check every 5 minutes
+        await sleep(120_000); // Check every 2 minutes (hustle mode)
         continue;
       }
 
@@ -307,8 +348,8 @@ async function run(): Promise<void> {
         const sleepUntilStr = db.getKV("sleep_until");
         const sleepUntil = sleepUntilStr
           ? new Date(sleepUntilStr).getTime()
-          : Date.now() + 5 * 60_000; // Default 5 min
-        const sleepMs = Math.max(sleepUntil - Date.now(), 300_000); // Minimum 5 min sleep
+          : Date.now() + 90_000; // Default 90s (hustle mode)
+        const sleepMs = Math.max(sleepUntil - Date.now(), 60_000); // Minimum 1 min sleep (aggressive)
         console.log(
           `[${new Date().toISOString()}] Sleeping for ${Math.round(sleepMs / 1000)}s`,
         );

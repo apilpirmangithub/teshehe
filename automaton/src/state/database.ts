@@ -24,7 +24,7 @@ import type {
   ReputationEntry,
   InboxMessage,
 } from "../types.js";
-import { SCHEMA_VERSION, CREATE_TABLES, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4 } from "./schema.js";
+import { SCHEMA_VERSION, CREATE_TABLES, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5 } from "./schema.js";
 
 export function createDatabase(dbPath: string): AutomatonDatabase {
   // Ensure directory exists
@@ -58,6 +58,14 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
 
   if (currentVersion < 4) {
     db.exec(MIGRATION_V4);
+  }
+
+  if (currentVersion < 5) {
+    try {
+      db.exec(MIGRATION_V5);
+    } catch {
+      // Columns may already exist
+    }
   }
 
   if (currentVersion < SCHEMA_VERSION) {
@@ -449,12 +457,16 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     entryAmountUsd: number,
     targetExitPrice: number,
     stopLossPrice: number,
+    yesTokenId?: string,
+    noTokenId?: string,
+    deadline?: string,
+    shares?: number,
   ): void => {
     db.prepare(
       `INSERT INTO pm_positions (
         id, market_id, market_title, side, entry_price, entry_amount_usd,
-        entry_time, target_exit_price, stop_loss_price
-      ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)`,
+        entry_time, target_exit_price, stop_loss_price, yes_token_id, no_token_id, deadline, shares
+      ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       marketId,
@@ -464,6 +476,10 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
       entryAmountUsd,
       targetExitPrice,
       stopLossPrice,
+      yesTokenId || null,
+      noTokenId || null,
+      deadline || null,
+      shares || null,
     );
   };
 
@@ -493,17 +509,27 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     status?: "open" | "closed",
   ): Array<{
     id: string;
+    marketId: string;
     marketTitle: string;
     side: string;
     entryPrice: number;
     entryAmount: number;
+    entryTime: string;
     currentPrice: number | null;
+    targetExitPrice: number | null;
+    stopLossPrice: number | null;
     pnlUsd: number;
     pnlPct: number;
     status: string;
+    closeReason: string | null;
+    closedAt: string | null;
+    yesTokenId: string | null;
+    noTokenId: string | null;
+    deadline: string | null;
+    shares: number | null;
   }> => {
     let query =
-      "SELECT id, market_title, side, entry_price, entry_amount_usd, current_price, pnl_usd, pnl_pct, status FROM pm_positions";
+      "SELECT id, market_id, market_title, side, entry_price, entry_amount_usd, entry_time, current_price, target_exit_price, stop_loss_price, pnl_usd, pnl_pct, status, close_reason, closed_at, yes_token_id, no_token_id, deadline, shares FROM pm_positions";
     if (status) {
       query += " WHERE status = ?";
     }
@@ -515,14 +541,24 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
 
     return rows.map((r) => ({
       id: r.id,
+      marketId: r.market_id,
       marketTitle: r.market_title,
       side: r.side,
       entryPrice: r.entry_price,
       entryAmount: r.entry_amount_usd,
+      entryTime: r.entry_time,
       currentPrice: r.current_price,
+      targetExitPrice: r.target_exit_price,
+      stopLossPrice: r.stop_loss_price,
       pnlUsd: r.pnl_usd,
       pnlPct: r.pnl_pct,
       status: r.status,
+      closeReason: r.close_reason,
+      closedAt: r.closed_at,
+      yesTokenId: r.yes_token_id,
+      noTokenId: r.no_token_id,
+      deadline: r.deadline,
+      shares: r.shares,
     }));
   };
 

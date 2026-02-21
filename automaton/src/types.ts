@@ -510,6 +510,10 @@ export interface AutomatonDatabase {
     entryAmountUsd: number,
     targetExitPrice: number,
     stopLossPrice: number,
+    yesTokenId?: string,
+    noTokenId?: string,
+    deadline?: string,
+    shares?: number,
   ): void;
   closePMPosition(
     id: string,
@@ -523,14 +527,24 @@ export interface AutomatonDatabase {
     status?: "open" | "closed",
   ): Array<{
     id: string;
+    marketId: string;
     marketTitle: string;
     side: string;
     entryPrice: number;
     entryAmount: number;
+    entryTime: string;
     currentPrice: number | null;
+    targetExitPrice: number | null;
+    stopLossPrice: number | null;
     pnlUsd: number;
     pnlPct: number;
     status: string;
+    closeReason: string | null;
+    closedAt: string | null;
+    yesTokenId: string | null;
+    noTokenId: string | null;
+    deadline: string | null;
+    shares: number | null;
   }>;
   insertPMTrade(
     id: string,
