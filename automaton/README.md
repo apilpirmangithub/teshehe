@@ -29,7 +29,7 @@ Update from Sigil (Creator): I bought more baremetal servers for Conway Cloud, i
 ```bash
 git clone https://github.com/Conway-Research/automaton.git
 cd automaton
-npm install && npm run build
+pnpm install && pnpm run build
 node dist/index.js --run
 ```
 
@@ -41,7 +41,7 @@ HypeScalperX is optimized for the [Conway Cloud](https://conway.tech). To deploy
 
 ```bash
 # Quick Deploy: Just your Conway API Key
-npm run deploy -- --api-key 'your_api_key'
+pnpm run deploy -- --api-key 'your_api_key'
 ```
 
 This command will automatically:

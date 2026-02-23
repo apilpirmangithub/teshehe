@@ -9,10 +9,10 @@ Anyone can deploy HyperScalperX to the Conway Cloud using only an API key:
    ```bash
    git clone https://github.com/apilpirmangithub/teshehe.git
    cd teshehe/automaton
-   npm install
+   pnpm install
    
    # Quick Deploy: Just your Conway API Key
-   npm run deploy -- --api-key 'your_api_key'
+   pnpm run deploy -- --api-key 'your_api_key'
    ```
 
 ## 🛠 Features
