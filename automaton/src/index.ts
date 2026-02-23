@@ -225,10 +225,10 @@ async function run(): Promise<void> {
   const db = createDatabase(dbPath);
 
   // Store identity in DB
-  db.setIdentity("name", config.name);
-  db.setIdentity("address", account.address);
-  db.setIdentity("creator", config.creatorAddress);
-  db.setIdentity("sandbox", config.sandboxId);
+  db.setIdentity("name", config.name || "Automaton");
+  db.setIdentity("address", account.address || "");
+  db.setIdentity("creator", config.creatorAddress || account.address || "");
+  db.setIdentity("sandbox", config.sandboxId || "local");
 
   // Store wallet address in KV for heartbeat tasks (balance checks)
   db.setKV("wallet_address", account.address);

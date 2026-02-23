@@ -181,6 +181,9 @@ async function main() {
             console.log(`[Deploy] Creating default ${f} in sandbox...`);
             const config = {
                 name: "HyperScalperX",
+                genesisPrompt: "You are HyperScalperX, an aggressive trading agent. Analyze markets and trade profitably.",
+                creatorAddress: "0x0000000000000000000000000000000000000000",
+                registeredWithConway: false,
                 sandboxId: SANDBOX_ID,
                 conwayApiKey: API_KEY,
                 conwayApiUrl: "https://api.conway.tech",
