@@ -19,10 +19,11 @@ const USDC_ADDRESSES: Record<string, Address> = {
   "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base mainnet
   "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
   "eip155:137": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  // Polygon native USDC
+  "eip155:999": "0xb88339CB7199b77E23DB6E890353E22632Ba630f",  // HyperEVM mainnet USDC
 };
 
-// Polygon has two USDC contracts — the bridged USDC.e is still widely used
-// (including Polymarket). We check both and sum them.
+// Polygon has two USDC contracts — the bridged USDC.e is still widely used. 
+// We check both and sum them.
 const USDC_EXTRA_ADDRESSES: Record<string, Address[]> = {
   "eip155:137": ["0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"], // USDC.e (bridged)
 };
@@ -36,6 +37,18 @@ const CHAINS: Record<string, any> = {
   "eip155:8453": base,
   "eip155:84532": baseSepolia,
   "eip155:137": polygon,
+  "eip155:999": {
+    id: 999,
+    name: "HyperEVM",
+    nativeCurrency: { name: "Hyperliquid", symbol: "HYPE", decimals: 18 },
+    rpcUrls: {
+      default: { http: ["https://rpc.hyperliquid.xyz/evm"] },
+      public: { http: ["https://rpc.hyperliquid.xyz/evm"] },
+    },
+    blockExplorers: {
+      default: { name: "HyperEVMScan", url: "https://hyperevmscan.io" },
+    },
+  },
 };
 type NetworkId = keyof typeof USDC_ADDRESSES;
 
@@ -108,7 +121,8 @@ function normalizeNetwork(raw: unknown): NetworkId | null {
   const normalized = raw.trim().toLowerCase();
   if (normalized === "base") return "eip155:8453";
   if (normalized === "base-sepolia") return "eip155:84532";
-  if (normalized === "eip155:8453" || normalized === "eip155:84532") {
+  if (normalized === "hyperliquid" || normalized === "hyperevm") return "eip155:999";
+  if (normalized === "eip155:8453" || normalized === "eip155:84532" || normalized === "eip155:999") {
     return normalized;
   }
   return null;
@@ -124,7 +138,7 @@ function normalizePaymentRequirement(raw: unknown): PaymentRequirement | null {
   const maxAmountRequired = typeof value.maxAmountRequired === "string"
     ? value.maxAmountRequired
     : typeof value.maxAmountRequired === "number" &&
-        Number.isFinite(value.maxAmountRequired)
+      Number.isFinite(value.maxAmountRequired)
       ? String(value.maxAmountRequired)
       : null;
   const payToAddress = typeof value.payToAddress === "string"

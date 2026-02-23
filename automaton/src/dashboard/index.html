@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HypeScalperX Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --border: rgba(255, 255, 255, 0.1);
+            --accent: #00e5ff;
+            --text: #e0e0e0;
+            --text-dim: #999;
+            --success: #00ffaa;
+            --error: #ff4d4d;
+            --blue: #2979ff;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Glassmorphism background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 50% 50%, #1a1a2e 0%, #0a0a0f 100%);
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 1rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -1px;
+            background: linear-gradient(135deg, var(--accent), var(--blue));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 10px var(--success);
+        }
+
+        .dot.sleeping {
+            background: var(--blue);
+            box-shadow: 0 0 10px var(--blue);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 1rem;
+            flex-shrink: 0;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            padding: 1.5rem;
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1rem;
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+            /* Important for scrollable children */
+        }
+
+        section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.25rem;
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        h2 {
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 1rem;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 1rem;
+            font-size: 0.9rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pnl-plus {
+            color: var(--success);
+        }
+
+        .pnl-minus {
+            color: var(--error);
+        }
+
+        .side-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+        }
+
+        .side-long {
+            background: rgba(0, 255, 170, 0.1);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .side-short {
+            background: rgba(255, 77, 77, 0.1);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        .table-wrapper {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 12px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            transition: all 0.3s ease;
+            flex-shrink: 0;
+        }
+
+        .status-badge.active {
+            border-color: var(--success);
+            color: var(--success);
+            background: rgba(0, 255, 114, 0.1);
+            box-shadow: 0 0 10px rgba(0, 255, 114, 0.2);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #666;
+            border-radius: 50%;
+        }
+
+        .status-badge.active .status-dot {
+            background: var(--success);
+            animation: pulse 1.5s infinite;
+        }
+
+        .log-container {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            flex: 1;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            min-height: 0;
+        }
+
+        #alpha-container {
+            overflow-y: auto;
+            max-height: 250px;
+            margin-bottom: 1rem;
+            padding-right: 5px;
+        }
+
+        .log-entry {
+            margin-bottom: 4px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 2px;
+        }
+
+        .log-time {
+            color: var(--text-dim);
+            margin-right: 8px;
+        }
+
+        /* Hypurrscan Alpha Styles */
+        .alpha-card {
+            background: rgba(0, 229, 255, 0.05);
+            border: 1px solid rgba(0, 229, 255, 0.2);
+            padding: 1rem;
+            border-radius: 12px;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .alpha-coin {
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .alpha-time {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        .btn-hypurr {
+            font-size: 0.7rem;
+            color: var(--accent);
+            text-decoration: none;
+            border: 1px solid var(--accent);
+            padding: 2px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .btn-hypurr:hover {
+            background: var(--accent);
+            color: var(--bg);
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        .live-indicator {
+            width: 8px;
+            height: 8px;
+            background: var(--error);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+            animation: pulse 1s infinite;
+        }
+
+        footer {
+            margin-top: 1rem;
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            flex-shrink: 0;
+            padding-bottom: 0.5rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <div class="logo">HYPESCALPER X</div>
+                <div id="agent-status" class="status-badge">
+                    <div class="status-dot"></div>
+                    <span id="status-text">AGENT: INITIALIZING</span>
+                </div>
+            </div>
+            <div style="display: flex; gap: 1rem; align-items: center;">
+                <a id="hypurr-link" href="#" target="_blank" class="btn-hypurr" style="display:none">View On
+                    Hypurrscan</a>
+                <div class="status-badge">
+                    <div id="status-dot" class="dot"></div>
+                    <span id="agent-state">Running</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="stat-card">
+                <div class="stat-label">ACCOUNT VALUE</div>
+                <div class="stat-value" id="acc-value">$0.00</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">TOTAL P&L / WIN RATE</div>
+                <div class="stat-value" id="total-pnl">$0.00 / 0%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">OPEN POSITIONS</div>
+                <div class="stat-value" id="open-count">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">CONWAY CREDITS</div>
+                <div class="stat-value" id="credits">$0.00</div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <section>
+                <h2>LIVE POSITIONS (HYPERLIQUID)</h2>
+                <div class="table-wrapper">
+                    <table id="positions-table">
+                        <thead>
+                            <tr>
+                                <th>ASSET</th>
+                                <th>SIDE</th>
+                                <th>ENTRY</th>
+                                <th>LIVE</th>
+                                <th>P&L</th>
+                                <th>LEVERAGE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Positions will be injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            <section>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h2 style="margin-bottom: 0;">HYPURRSCAN ALPHA</h2>
+                    <div id="protocol-fees" style="font-size: 0.8rem; color: var(--text-dim);"></div>
+                </div>
+                <div id="alpha-container">
+                    <div style="color:grey; text-align:center; padding: 2rem;">Fetching recently launched perps...</div>
+                </div>
+
+                <h2 style="margin-top: 2rem;">ACTIVITY LOG</h2>
+                <div class="log-container" id="log-container">
+                    <div class="log-entry"><span class="log-time">System</span> Dashboard initialized. Connecting to
+                        API...</div>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <div class="live-indicator"></div> LIVE DATA REFRESCHING EVERY 10S • CONWAY AUTOMATON V0.1.0
+        </footer>
+    </div>
+
+    <script>
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+                updateUI(data);
+            } catch (err) {
+                console.error('Fetch error:', err);
+            }
+        }
+
+        function updateUI(data) {
+            // Stats
+            document.getElementById('acc-value').textContent = `$${data.hlAccountValue.toFixed(2)}`;
+            document.getElementById('total-pnl').textContent = `$${data.scalperTotalPnl.toFixed(2)} / ${data.scalperWinRate}`;
+            document.getElementById('open-count').textContent = data.scalperOpenPositions.length;
+            document.getElementById('credits').textContent = `$${(data.conwayCredits / 100).toFixed(2)}`;
+
+            // Update Status Badge
+            const statusBadge = document.getElementById('agent-status');
+            const statusText = document.getElementById('status-text');
+            const agentState = data.agentState || 'unknown';
+
+            if (agentState === 'running' || agentState === 'trading' || agentState === 'sleeping') {
+                statusBadge.classList.add('active');
+                statusText.innerText = `AGENT: ${agentState.toUpperCase()}`;
+            } else {
+                statusBadge.classList.remove('active');
+                statusText.innerText = `AGENT: ${agentState.toUpperCase()}`;
+            }
+
+            const stateEl = document.getElementById('agent-state');
+            stateEl.textContent = data.agentState.charAt(0).toUpperCase() + data.agentState.slice(1);
+            const dot = document.getElementById('status-dot');
+            dot.className = 'dot ' + data.agentState;
+
+            // Table
+            const tbody = document.querySelector('#positions-table tbody');
+            tbody.innerHTML = '';
+
+            if (data.scalperOpenPositions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:grey;padding:2rem;">No open positions - scanning markets...</td></tr>';
+            } else {
+                data.scalperOpenPositions.forEach(p => {
+                    const row = document.createElement('tr');
+                    const pnlClass = p.livePnlUsd >= 0 ? 'pnl-plus' : 'pnl-minus';
+                    const sideClass = p.side === 'LONG' ? 'side-long' : 'side-short';
+                    const hypurrMarketUrl = `https://hypurrscan.io/market/${p.tokenSymbol.split(':')[1] || p.tokenSymbol}`;
+
+                    row.innerHTML = `
+                        <td><strong>${p.tokenSymbol}</strong> <a href="${hypurrMarketUrl}" target="_blank" style="text-decoration:none; font-size:10px; margin-left:5px;">🔗</a></td>
+                        <td><span class="side-badge ${sideClass}">${p.side}</span></td>
+                        <td>$${p.entryPrice.toFixed(4)}</td>
+                        <td>$${p.livePrice.toFixed(4)}</td>
+                        <td class="${pnlClass}">${p.livePnlUsd >= 0 ? '+' : ''}${p.livePnlUsd.toFixed(2)} (${p.livePnlPct.toFixed(1)}%)</td>
+                        <td>${p.leverage}x</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+
+            // Hypurrscan Alpha
+            if (data.hypurrscan && data.hypurrscan.recentAlpha) {
+                const alphaContainer = document.getElementById('alpha-container');
+                alphaContainer.innerHTML = '';
+                data.hypurrscan.recentAlpha.forEach(a => {
+                    const card = document.createElement('div');
+                    card.className = 'alpha-card';
+                    const baseCoin = a.coin.split(':')[1] || a.coin;
+                    card.innerHTML = `
+                        <div>
+                            <div class="alpha-coin">${a.coin}</div>
+                            <div class="alpha-time">${new Date(a.time).toLocaleTimeString()} • ${a.dex}</div>
+                        </div>
+                        <a href="https://hypurrscan.io/market/${baseCoin}" target="_blank" class="btn-hypurr">Trade/View</a>
+                    `;
+                    alphaContainer.appendChild(card);
+                });
+
+                if (data.hypurrscan.protocolFees) {
+                    const fees = data.hypurrscan.protocolFees;
+                    document.getElementById('protocol-fees').innerHTML = `Protocol Fees: $${(fees.total_fees / 1e12).toFixed(2)}M`;
+                }
+            }
+
+            // Wallet Link
+            if (data.walletAddress) {
+                const link = document.getElementById('hypurr-link');
+                link.href = `https://hypurrscan.io/address/${data.walletAddress}`;
+                link.style.display = 'inline-block';
+            }
+        }
+
+        setInterval(fetchData, 10000);
+        fetchData();
+    </script>
+</body>
+
+</html>

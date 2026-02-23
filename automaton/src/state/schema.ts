@@ -184,87 +184,7 @@ export const MIGRATION_V3 = `
     ON inbox_messages(received_at) WHERE processed_at IS NULL;
 `;
 
-export const MIGRATION_V4 = `
-  -- Polymarket tables (new in schema version 4)
-  CREATE TABLE IF NOT EXISTS pm_positions (
-    id TEXT PRIMARY KEY,
-    market_id TEXT NOT NULL,
-    market_title TEXT NOT NULL,
-    side TEXT NOT NULL CHECK (side IN ('YES', 'NO')),
-    entry_price REAL NOT NULL,
-    entry_amount_usd REAL NOT NULL,
-    entry_time TEXT NOT NULL,
-    current_price REAL,
-    current_value_usd REAL,
-    target_exit_price REAL,
-    stop_loss_price REAL,
-    pnl_usd REAL DEFAULT 0,
-    pnl_pct REAL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'cancelled')),
-    close_reason TEXT,
-    closed_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS pm_trades (
-    id TEXT PRIMARY KEY,
-    market_id TEXT NOT NULL,
-    market_title TEXT NOT NULL,
-    side TEXT NOT NULL CHECK (side IN ('YES', 'NO')),
-    entry_price REAL NOT NULL,
-    entry_amount_usd REAL NOT NULL,
-    entry_time TEXT NOT NULL,
-    exit_price REAL NOT NULL,
-    exit_amount_usd REAL NOT NULL,
-    exit_time TEXT NOT NULL,
-    exit_reason TEXT NOT NULL CHECK (exit_reason IN ('target_hit', 'stop_loss', 'timeout', 'manual')),
-    pnl_usd REAL NOT NULL,
-    pnl_pct REAL NOT NULL,
-    holding_minutes INTEGER,
-    weather_condition TEXT,
-    edge_pct REAL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS pm_portfolio (
-    id TEXT PRIMARY KEY,
-    timestamp TEXT NOT NULL,
-    total_capital_usd REAL NOT NULL,
-    current_balance_usd REAL NOT NULL,
-    positions_open INTEGER NOT NULL DEFAULT 0,
-    pnl_today_usd REAL NOT NULL DEFAULT 0,
-    trades_today INTEGER NOT NULL DEFAULT 0,
-    win_count INTEGER NOT NULL DEFAULT 0,
-    loss_count INTEGER NOT NULL DEFAULT 0,
-    win_rate_pct REAL,
-    daily_max_loss_reached INTEGER NOT NULL DEFAULT 0,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS pm_edges (
-    id TEXT PRIMARY KEY,
-    market_id TEXT NOT NULL,
-    market_title TEXT NOT NULL,
-    location TEXT,
-    weather_forecast TEXT,
-    market_price_yes REAL NOT NULL,
-    your_forecast_pct REAL NOT NULL,
-    edge_pct REAL NOT NULL,
-    recommendation TEXT CHECK (recommendation IN ('strong_buy', 'buy', 'hold', 'skip')),
-    bet_placed INTEGER NOT NULL DEFAULT 0,
-    bet_result TEXT,
-    notes TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_pm_positions_status ON pm_positions(status);
-  CREATE INDEX IF NOT EXISTS idx_pm_positions_created ON pm_positions(entry_time);
-  CREATE INDEX IF NOT EXISTS idx_pm_trades_created ON pm_trades(created_at);
-  CREATE INDEX IF NOT EXISTS idx_pm_portfolio_timestamp ON pm_portfolio(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_pm_edges_date ON pm_edges(created_at);
-`;
+// Legacy migrations removed.
 
 export const MIGRATION_V2 = `
   CREATE TABLE IF NOT EXISTS skills (
@@ -314,12 +234,4 @@ export const MIGRATION_V2 = `
   CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(enabled);
   CREATE INDEX IF NOT EXISTS idx_children_status ON children(status);
   CREATE INDEX IF NOT EXISTS idx_reputation_to ON reputation(to_agent);
-`;
-
-export const MIGRATION_V5 = `
-  -- Add token IDs and deadline to pm_positions for live price tracking
-  ALTER TABLE pm_positions ADD COLUMN yes_token_id TEXT;
-  ALTER TABLE pm_positions ADD COLUMN no_token_id TEXT;
-  ALTER TABLE pm_positions ADD COLUMN deadline TEXT;
-  ALTER TABLE pm_positions ADD COLUMN shares REAL;
 `;

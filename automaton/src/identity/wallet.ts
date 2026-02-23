@@ -13,7 +13,7 @@ import path from "path";
 import type { WalletData } from "../types.js";
 
 const AUTOMATON_DIR = path.join(
-  process.env.HOME || "/root",
+  process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH || "/root",
   ".automaton",
 );
 const WALLET_FILE = path.join(AUTOMATON_DIR, "wallet.json");
@@ -92,4 +92,18 @@ export function loadWalletAccount(): PrivateKeyAccount | null {
 
 export function walletExists(): boolean {
   return fs.existsSync(WALLET_FILE);
+}
+
+/**
+ * Get the raw private key (for external SDKs like Hyperliquid).
+ */
+export function getWalletPrivateKey(): string | null {
+  if (!fs.existsSync(WALLET_FILE)) {
+    return null;
+  }
+
+  const walletData: WalletData = JSON.parse(
+    fs.readFileSync(WALLET_FILE, "utf-8"),
+  );
+  return walletData.privateKey;
 }

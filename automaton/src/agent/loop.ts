@@ -79,7 +79,7 @@ export async function runAgentLoop(
   onStateChange?.("waking");
 
   // Get financial state
-  let financial = await getFinancialState(conway, identity.address);
+  let financial = await getFinancialState(conway, identity.address, db);
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -149,7 +149,7 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address);
+      financial = await getFinancialState(conway, identity.address, db);
 
       // Check survival tier
       const tier = getSurvivalTier(financial.creditsCents);
@@ -342,29 +342,39 @@ export async function runAgentLoop(
 async function getFinancialState(
   conway: ConwayClient,
   address: string,
+  db: AutomatonDatabase,
 ): Promise<FinancialState> {
-  let creditsCents = 0;
-  let usdcBalance = 0;
-  let usdcBalancePolygon = 0;
+  const lastStateStr = db.getKV("financial_state");
+  const lastState = lastStateStr ? JSON.parse(lastStateStr) : null;
+
+  let creditsCents = lastState?.creditsCents || 0;
+  let usdcBalance = lastState?.usdcBalance || 0;
 
   try {
     creditsCents = await conway.getCreditsBalance();
-  } catch {}
+  } catch (err: any) {
+    console.warn(`[Loop] Failed to fetch credits balance: ${err.message}. Using last known value.`);
+  }
 
+  // Primary capital: Hyperliquid L1 Account Value
   try {
-    usdcBalance = await getUsdcBalance(address as `0x${string}`, "eip155:8453");
-  } catch {}
+    const { getBalance } = await import("../survival/hyperliquid.js");
+    const hl = await getBalance();
+    usdcBalance = hl.accountValue;
+  } catch (err: any) {
+    console.warn(`[Loop] Failed to fetch Hyperliquid balance: ${err.message}. Using last known value.`);
+  }
 
-  try {
-    usdcBalancePolygon = await getUsdcBalance(address as `0x${string}`, "eip155:137");
-  } catch {}
-
-  return {
+  const newState = {
     creditsCents,
     usdcBalance,
-    usdcBalancePolygon,
     lastChecked: new Date().toISOString(),
   };
+
+  // Persist the latest successful check or the fallback
+  db.setKV("financial_state", JSON.stringify(newState));
+
+  return newState;
 }
 
 function estimateCostCents(

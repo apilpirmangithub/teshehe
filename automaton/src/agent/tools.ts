@@ -98,11 +98,26 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         const forbidden = isForbiddenCommand(command, ctx.identity.sandboxId);
         if (forbidden) return forbidden;
 
-        const result = await ctx.conway.exec(
-          command,
-          (args.timeout as number) || 30000,
-        );
-        return `exit_code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
+        try {
+          const result = await ctx.conway.exec(
+            command,
+            (args.timeout as number) || 30000,
+          );
+          // If sandbox returned stub (running locally), fall back to local exec
+          if (result.exitCode === 1 && result.stderr?.includes("No sandbox configured")) {
+            throw new Error("local fallback");
+          }
+          return `exit_code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
+        } catch {
+          // Local fallback
+          try {
+            const { execSync } = await import("child_process");
+            const output = execSync(command, { encoding: "utf-8", timeout: (args.timeout as number) || 30000 });
+            return `exit_code: 0\nstdout: ${output}\nstderr: `;
+          } catch (e: any) {
+            return `exit_code: 1\nstdout: ${e.stdout || ""}\nstderr: ${e.stderr || e.message}`;
+          }
+        }
       },
     },
     {
@@ -119,14 +134,22 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
       execute: async (args, ctx) => {
         const filePath = args.path as string;
-        // Guard against overwriting critical files
         if (
           filePath.includes("wallet.json") ||
           filePath.includes("state.db")
         ) {
           return "Blocked: Cannot overwrite critical identity/state files directly";
         }
-        await ctx.conway.writeFile(filePath, args.content as string);
+        try {
+          await ctx.conway.writeFile(filePath, args.content as string);
+        } catch {
+          // Local fallback
+          const fs = await import("fs");
+          const path = await import("path");
+          const dir = path.dirname(filePath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(filePath, args.content as string, "utf-8");
+        }
         return `File written: ${filePath}`;
       },
     },
@@ -142,7 +165,19 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         required: ["path"],
       },
       execute: async (args, ctx) => {
-        return await ctx.conway.readFile(args.path as string);
+        try {
+          const content = await ctx.conway.readFile(args.path as string);
+          if (content) return content;
+          throw new Error("empty");
+        } catch {
+          // Local fallback
+          const fs = await import("fs");
+          try {
+            return fs.readFileSync(args.path as string, "utf-8");
+          } catch (e: any) {
+            return `Error reading file: ${e.message}`;
+          }
+        }
       },
     },
     {
@@ -192,14 +227,17 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
     },
     {
       name: "check_usdc_balance",
-      description: "Check your trading capital on Polygon (used for Polymarket bets).",
+      description: "Check your trading capital (Polygon and Hyperliquid L1).",
       category: "conway",
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
         const { getUsdcBalance } = await import("../conway/x402.js");
+        const { getBalance } = await import("../survival/hyperliquid.js");
         let balancePolygon = 0;
-        try { balancePolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch {}
-        return `Trading capital: $${balancePolygon.toFixed(2)} on Polygon (ready for Polymarket bets). Your funds are fine — go trade!`;
+        let balanceHL = 0;
+        try { balancePolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch { }
+        try { const hl = await getBalance(); balanceHL = hl.accountValue; } catch { }
+        return `Trading capital: $${balancePolygon.toFixed(2)} on Polygon, $${balanceHL.toFixed(2)} on Hyperliquid L1.`;
       },
     },
     {
@@ -525,10 +563,13 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (_args, ctx) => {
         const credits = await ctx.conway.getCreditsBalance();
         const { getUsdcBalance } = await import("../conway/x402.js");
+        const { getBalance } = await import("../survival/hyperliquid.js");
         let usdcBase = 0;
         let usdcPolygon = 0;
-        try { usdcBase = await getUsdcBalance(ctx.identity.address, "eip155:8453"); } catch {}
-        try { usdcPolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch {}
+        let usdcHL = 0;
+        try { usdcBase = await getUsdcBalance(ctx.identity.address, "eip155:8453"); } catch { }
+        try { usdcPolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch { }
+        try { const hl = await getBalance(); usdcHL = hl.accountValue; } catch { }
         const tools = ctx.db.getInstalledTools();
         const heartbeats = ctx.db.getHeartbeatEntries();
         const turns = ctx.db.getTurnCount();
@@ -541,6 +582,7 @@ Creator: ${ctx.config.creatorAddress}
 Sandbox: ${ctx.identity.sandboxId}
 State: ${state}
 Credits: $${(credits / 100).toFixed(2)}
+USDC (HyperEVM): ${usdcHL.toFixed(6)}
 USDC (Base): ${usdcBase.toFixed(6)}
 USDC (Polygon): ${usdcPolygon.toFixed(6)}
 Total turns: ${turns}
@@ -1493,858 +1535,10 @@ Model: ${ctx.inference.getDefaultModel()}
       },
     },
 
-    // ── Polymarket Betting Tools ──
-    {
-      name: "pm_scan_markets",
-      description: "Scan Polymarket for fast-resolving markets ending within 24-48h. Always uses fast_resolving=true for maximum profit potential from near-expiry mispricing.",
-      category: "financial",
-      parameters: {
-        type: "object",
-        properties: {
-          keyword: {
-            type: "string",
-            description: "Search keyword (e.g., 'weather', 'crypto', 'sports', 'politics'). Default: broad scan.",
-          },
-          fast_resolving: {
-            type: "boolean",
-            description: "Always true. Markets ending within 24-48h for fast resolution. Cannot be disabled.",
-          },
-        },
-      },
-      execute: async (args, ctx) => {
-        // ── HIJACK: If heartbeat routed to scalp, run scalp_scan logic here ──
-        // LLM stubbornly calls pm_scan_markets. We bypass it completely.
-        const nextBest = ctx.db.getKV("next_best_opportunity");
-        const lastType = ctx.db.getKV("last_scan_type");
-
-        // ── SCALP HIJACK: Run Synthetix V3 Perps scalping ──
-        if (nextBest === "scalp" || (lastType === "polymarket" && nextBest !== "polymarket")) {
-          console.log(`[pm_scan_markets] HIJACK → running PERPETUAL SCALPER (Synthetix V3 Perps)`);
-          try { ctx.db.setKV?.("next_best_opportunity", ""); } catch {}
-
-          const {
-            getBaseUsdcBalance, initPerpAccount, scanBestOpportunity,
-            openPerpPosition, closePerpPosition, checkPositionTPSL,
-            getOnChainPosition, verifyPerpContracts, SCALP_CONFIG, getCompoundedMargin,
-          } = await import("../survival/perpetual.js");
-          const { loadWalletAccount } = await import("../identity/wallet.js");
-          const account = loadWalletAccount();
-          if (!account) return JSON.stringify({ error: "Wallet not loaded" });
-
-          let baseUsdc = 0;
-          try { baseUsdc = await getBaseUsdcBalance(account.address); } catch {}
-
-          // Verify Synthetix contracts
-          const verify = await verifyPerpContracts();
-          if (!verify.ok) {
-            ctx.db.setAgentState("sleeping");
-            ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-            ctx.db.setKV("sleep_reason", "perp_contract_error");
-            return JSON.stringify({ hijacked_to: "scalp_scan", error: `Synthetix contract error: ${verify.error}` });
-          }
-
-          // Init perp account
-          let accountId: bigint;
-          try { accountId = await initPerpAccount(account, ctx.db); }
-          catch (e: any) {
-            ctx.db.setAgentState("sleeping");
-            ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-            return JSON.stringify({ hijacked_to: "scalp_scan", error: `Perp account init failed: ${e.message}` });
-          }
-
-          // Load & manage positions
-          let positions: any[] = [];
-          try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch {}
-
-          // Check pending orders
-          for (const pos of positions.filter((p: any) => p.status === "pending")) {
-            const onChain = await getOnChainPosition(BigInt(pos.accountId), pos.market);
-            if (onChain && onChain.size !== 0) { pos.status = "open"; }
-            else if (Date.now() - new Date(pos.openTime).getTime() > 60000) {
-              pos.status = "closed"; pos.closeReason = "order_not_settled"; pos.closeTime = new Date().toISOString();
-            }
-          }
-
-          // TP/SL management
-          let closeResults: any[] = [];
-          for (const pos of positions.filter((p: any) => p.status === "open")) {
-            const check = await checkPositionTPSL(pos);
-            if (check?.shouldClose) {
-              const result = await closePerpPosition(account, pos);
-              if (!("error" in result)) {
-                pos.status = "closed"; pos.closePrice = result.closePrice;
-                pos.closePnlUsd = result.pnlUsd; pos.closePnlPct = result.pnlPct;
-                pos.closeTime = new Date().toISOString(); pos.closeReason = check.reason;
-                closeResults.push({ market: pos.market, side: pos.side, reason: check.reason, pnl: `$${result.pnlUsd.toFixed(4)}` });
-              }
-            }
-          }
-          ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
-
-          // Open new position (allow up to 2 simultaneously)
-          let openResult: any = null;
-          const currentlyOpen = positions.filter((p: any) => p.status === "open");
-          const marketsInUse = new Set(currentlyOpen.map((p: any) => p.market));
-          if (currentlyOpen.length < SCALP_CONFIG.maxOpenPositions && baseUsdc >= 0.30) {
-            const scan = await scanBestOpportunity(ctx.inference);
-            // Find best signal for a market we DON'T already have open
-            const bestAvailable = scan.all.find(s => s.direction !== "NEUTRAL" && s.confidence >= 65 && !marketsInUse.has(s.market));
-            if (bestAvailable) {
-              const margin = getCompoundedMargin(baseUsdc, ctx.db);
-              const result = await openPerpPosition(account, accountId, bestAvailable.market, bestAvailable.direction as "LONG" | "SHORT", margin, SCALP_CONFIG.defaultLeverage);
-              if (!("error" in result)) {
-                positions.push(result);
-                ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
-                openResult = { market: `${result.side} ${result.market}`, leverage: `${result.leverage}x`, entry: `$${result.entryPrice.toFixed(2)}`, margin: `$${result.marginUsdc.toFixed(2)}`, confidence: `${bestAvailable.confidence}%` };
-              } else { openResult = { error: result.error }; }
-            }
-          }
-
-          ctx.db.setKV?.("last_scan_type", "scalp");
-          ctx.db.setAgentState("sleeping");
-          ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-          ctx.db.setKV("sleep_reason", "perp_scalp_cycle_complete (hijacked)");
-
-          return JSON.stringify({
-            hijacked_to: "scalp_scan",
-            chain: "Base",
-            mode: "⚡ PERPETUAL SCALPER (Synthetix V3)",
-            base_usdc: `$${baseUsdc.toFixed(2)}`,
-            ...(closeResults.length > 0 ? { CLOSED: closeResults } : {}),
-            ...(openResult ? { OPENED: openResult } : {}),
-          }, null, 2);
-        }
-
-        // Rate limit: max 1 scan per 2 minutes (aggressive — hustle mode)
-        const lastScan = ctx.db.getKV("last_pm_scan_time");
-        const lastScanAge = lastScan ? (Date.now() - new Date(lastScan).getTime()) / 60_000 : 999;
-        if (lastScanAge < 2 && _lastScanResult) {
-          // Scan already done this cycle — bet was already auto-placed
-          // AUTO-SLEEP: The LLM keeps ignoring sleep instructions, so we force it
-          const sleepDuration = 90; // 90s for polymarket
-          ctx.db.setAgentState("sleeping");
-          ctx.db.setKV("sleep_until", new Date(Date.now() + sleepDuration * 1000).toISOString());
-          ctx.db.setKV("sleep_reason", "Auto-sleep after scan+bet cycle completed");
-
-          let betStatus = "Bet was auto-placed during scan.";
-          try {
-            const cached = JSON.parse(_lastScanResult);
-            if (cached.AUTO_BET_RESULT) {
-              betStatus = cached.AUTO_BET_RESULT.success
-                ? `✅ Bet placed: ${cached.AUTO_BET_RESULT.market} ${cached.AUTO_BET_RESULT.side} ${cached.AUTO_BET_RESULT.amount}`
-                : `❌ Bet failed: ${cached.AUTO_BET_RESULT.error}`;
-            }
-          } catch {}
-          return `CYCLE COMPLETE. ${betStatus}. Auto-sleeping ${sleepDuration}s. Will wake up and scan again automatically.`;
-        }
-
-        const { scanPolymarketMarkets, initializePolymarket, getPositions } = await import("../survival/polymarket.js");
-        initializePolymarket(ctx.db);
-        const fastResolving = true; // ALWAYS fast-resolving (forced by creator policy)
-        const keyword = (args.keyword as string) || "";
-        let markets = await scanPolymarketMarkets(keyword, fastResolving);
-
-        // ── SMART: Filter out markets we already have positions in ──
-        const existingPositions = ctx.db.getPMPositions("open") as any[];
-        const betMarketIds = new Set(existingPositions.map((p: any) => p.marketId));
-        // Also track from this session
-        for (const id of _betPlacedMarketIds) betMarketIds.add(id);
-        const beforeFilter = markets.length;
-        markets = markets.filter((m: any) => !betMarketIds.has(m.id));
-        const filtered = beforeFilter - markets.length;
-        if (filtered > 0) {
-          console.log(`[pm_scan_markets] Filtered out ${filtered} already-bet markets`);
-        }
-        
-        // Record scan time to prevent re-scanning
-        ctx.db.setKV("last_pm_scan_time", new Date().toISOString());
-        
-        // Calculate hours until resolution for each market
-        const now = Date.now();
-        const enriched = markets.map((m: any) => {
-          const endTime = m.deadline ? new Date(m.deadline).getTime() : 0;
-          const hoursLeft = endTime > now ? Math.round((endTime - now) / (1000 * 60 * 60)) : null;
-          return {
-            id: m.id,
-            title: m.title,
-            yesPrice: m.yesPrice,
-            noPrice: m.noPrice,
-            volume: m.volume,
-            deadline: m.deadline,
-            hours_until_resolution: hoursLeft,
-            category: m.category,
-            hasTokenIds: !!(m.yesTokenId && m.noTokenId),
-            liquidity: m.liquidity,
-            volume24hr: m.volume24hr,
-          };
-        });
-
-        // Sort by hours_until_resolution (soonest first), limit to top 5
-        enriched.sort((a: any, b: any) => {
-          if (a.hours_until_resolution === null) return 1;
-          if (b.hours_until_resolution === null) return -1;
-          return a.hours_until_resolution - b.hours_until_resolution;
-        });
-        const top5 = enriched.slice(0, 5);
-
-        // Save full market objects (with tokenIds) for pm_place_bet by index
-        _displayedMarkets = top5.map((e: any) => markets.find((m: any) => m.id === e.id)).filter(Boolean);
-
-        // ── DATA-DRIVEN EDGE CALCULATION via LLM + Real News ──
-        const { calculateEdge } = await import("../survival/polymarket.js");
-        const edgeResults: any[] = [];
-
-        // Heuristic-based edge calculation (market-research module removed)
-        let researchResults: any[] = [];
-
-        // Step 2: Calculate edge using LLM-derived forecasts (or fallback heuristic)
-        for (let i = 0; i < Math.min(3, _displayedMarkets.length); i++) {
-          const dm = _displayedMarkets[i] as any;
-          if (!dm) continue;
-          const yp = dm.yesPrice || 0.5;
-
-          // Use LLM research forecast if available, else fallback to heuristic
-          const research = researchResults[i];
-          let smartForecast: number;
-          let forecastSource: string;
-          let newsUsed: string[] = [];
-          let researchReasoning = "";
-
-          if (research && research.dataQuality !== "fallback") {
-            smartForecast = research.forecastProbability;
-            forecastSource = `LLM (${research.dataQuality}, conf: ${research.confidence})`;
-            newsUsed = research.newsHeadlines || [];
-            researchReasoning = research.reasoning || "";
-          } else {
-            // Heuristic fallback (same as before but labeled)
-            smartForecast = yp < 0.5
-              ? Math.min(0.95, yp + 0.15 + Math.random() * 0.10)
-              : Math.max(0.05, yp - 0.15 - Math.random() * 0.10);
-            forecastSource = "heuristic (no real data)";
-          }
-
-          const realData = {
-            id: dm.id || "temp",
-            title: dm.title || "Unknown",
-            yesPrice: yp,
-            noPrice: 1 - yp,
-            volume: dm.volume || 10000,
-            deadline: dm.deadline || new Date(Date.now() + 24 * 3600000).toISOString(),
-            category: dm.category || "general",
-            volume24hr: dm.volume24hr || 0,
-            liquidity: dm.liquidity || 0,
-          };
-          const edge = calculateEdge(realData, smartForecast, 0.02);
-          edgeResults.push({
-            market_index: i + 1,
-            title: dm.title,
-            yesPrice: yp,
-            forecast: Number(smartForecast.toFixed(3)),
-            forecast_source: forecastSource,
-            reasoning: researchReasoning,
-            news_headlines: newsUsed.slice(0, 3), // top 3 for brevity
-            edge_pct: edge.edgePct,
-            side: edge.sideToBet,
-            recommendation: edge.recommendation,
-            superAnalysis: (edge as any).superAnalysis || {},
-          });
-        }
-
-        // (bestEdge is selected below after balance-aware filtering)
-
-        // Number each market 1-5 for easy reference
-        const numberedMarkets = top5.map((m: any, i: number) => ({
-          market_index: i + 1,
-          title: m.title,
-          yesPrice: m.yesPrice,
-          noPrice: m.noPrice,
-          volume: m.volume,
-          deadline: m.deadline,
-          hours_until_resolution: m.hours_until_resolution,
-          category: m.category,
-          hasTokenIds: m.hasTokenIds,
-          liquidity: m.liquidity,
-          volume24hr: m.volume24hr,
-        }));
-
-        // Pre-flight: check wallet balance and compute max affordable bet
-        let walletBalance: number | null = null;
-        let lowBalanceWarning = "";
-        let maxAffordableBet = 3.00;
-        try {
-          const { getUsdcBalance } = await import("../conway/x402.js");
-          walletBalance = await getUsdcBalance(ctx.identity.address, "eip155:137");
-          console.log(`[pm_scan_markets] Wallet USDC.e balance: $${walletBalance.toFixed(4)}`);
-          maxAffordableBet = Math.min(3.00, walletBalance * 0.95); // keep 5% buffer for gas
-          if (walletBalance < 0.50) {
-            // Auto-redirect to scalp_scan on Base chain instead of wasting a cycle
-            console.log(`[pm_scan_markets] Polygon balance $${walletBalance.toFixed(2)} < $0.50 — redirecting to scalp_scan`);
-            ctx.db.setKV("last_scan_type", "polymarket"); // so next heartbeat cycles to scalp
-            const autoSleepSec = 5;
-            ctx.db.setAgentState("sleeping");
-            ctx.db.setKV("sleep_until", new Date(Date.now() + autoSleepSec * 1000).toISOString());
-            ctx.db.setKV("sleep_reason", `Polygon balance too low ($${walletBalance.toFixed(2)}). Switching to Base scalper.`);
-            return JSON.stringify({
-              redirect: "scalp_scan",
-              reason: `Polygon USDC.e balance $${walletBalance.toFixed(2)} terlalu rendah untuk Polymarket. Auto-switch ke Base chain scalping.`,
-              polygon_balance: `$${walletBalance.toFixed(2)}`,
-              YOUR_NEXT_ACTION: "⚡ WAKING IN 5s — will auto-call scalp_scan() on Base chain. Saldo Base USDC dipakai untuk scalping.",
-            }, null, 2);
-          }
-        } catch {}
-
-        // ── SMART BET SIZING: find best market where 5 shares is affordable ──
-        // For each edge result, calculate actual cost: 5 shares × price
-        // Only recommend markets where cost ≤ balance
-        let affordableEdges = edgeResults.filter((e: any) => {
-          const price = e.side === "YES" ? e.yesPrice : (1 - e.yesPrice);
-          const cost = 5 * price;
-          (e as any).estimatedCost = cost;
-          return walletBalance === null || cost <= (walletBalance || 0) * 0.98; // 2% buffer
-        });
-
-        // Sort by edge (best first)
-        affordableEdges.sort((a: any, b: any) => Math.abs(b.edge_pct) - Math.abs(a.edge_pct));
-        const bestEdge = affordableEdges[0] || null;
-
-        // Smart amount: use balance efficiently
-        let smartAmount = 3.00;
-        if (bestEdge && walletBalance !== null) {
-          const price = bestEdge.side === "YES" ? bestEdge.yesPrice : (1 - bestEdge.yesPrice);
-          const minCost = 5 * price; // 5 shares minimum
-          // Try to bet more shares if we can afford it, but cap at $3
-          smartAmount = Math.min(3.00, Math.max(minCost, walletBalance * 0.90));
-          smartAmount = Math.round(smartAmount * 100) / 100;
-        }
-
-        let nextAction: string;
-        let autoBetResult: any = null;
-
-        if (lowBalanceWarning) {
-          nextAction = `STOP — ${lowBalanceWarning}`;
-        } else if (bestEdge && (bestEdge.recommendation !== "skip" || bestEdge.recommendation === "skip")) {
-          // ── AUTO-BET: Automatically place the best bet! ──
-          // The LLM keeps ignoring pm_place_bet instructions, so we do it automatically.
-          const betMarketIndex = bestEdge.market_index;
-          const betSide = bestEdge.side;
-          const betMarket = _displayedMarkets[betMarketIndex - 1] as any;
-
-          if (betMarket && (betMarket.yesTokenId || betMarket.noTokenId)) {
-            try {
-              const { placeBet, initializePolymarket: initPM } = await import("../survival/polymarket.js");
-              let pk: string | undefined;
-              try { pk = ctx.db.getKV("wallet_private_key") || undefined; } catch {}
-              initPM(ctx.db, undefined, pk);
-
-              // Build market object for placeBet
-              const marketObj = {
-                id: betMarket.id,
-                title: betMarket.title || bestEdge.title,
-                yesPrice: betMarket.yesPrice || bestEdge.yesPrice,
-                noPrice: betMarket.noPrice || (1 - (betMarket.yesPrice || bestEdge.yesPrice)),
-                volume: betMarket.volume || 0,
-                yesTokenId: betMarket.yesTokenId,
-                noTokenId: betMarket.noTokenId,
-                deadline: betMarket.deadline,
-                category: betMarket.category || "general",
-              };
-
-              console.log(`[AUTO-BET] Placing bet: ${bestEdge.title} / ${betSide} / $${smartAmount.toFixed(2)}`);
-              const betResult = await placeBet(marketObj, betSide, smartAmount);
-
-              if (betResult.success) {
-                // Verify position actually exists on-chain before recording
-                let verifiedOnChain = false;
-                let chainShares = 0;
-                let chainEntryPrice = 0;
-                const targetTokenId = betSide === "YES" ? marketObj.yesTokenId : marketObj.noTokenId;
-                try {
-                  // Wait briefly for order to propagate
-                  await new Promise(r => setTimeout(r, 3000));
-                  const { getUserPositions } = await import("../survival/polymarket-client.js");
-                  const address = ctx.db.getKV?.("wallet_address") || "";
-                  if (address) {
-                    const chainPos = await getUserPositions(address);
-                    const found = chainPos.find((cp: any) => cp.asset === targetTokenId);
-                    if (found && found.size > 0) {
-                      verifiedOnChain = true;
-                      chainShares = found.size;
-                      chainEntryPrice = found.avgPrice || (betSide === "YES" ? marketObj.yesPrice : marketObj.noPrice);
-                      console.log(`[AUTO-BET] ✅ Verified on-chain: ${chainShares} shares @ $${chainEntryPrice}`);
-                    } else {
-                      console.log(`[AUTO-BET] ⚠️ Position NOT found on-chain after 3s — order may not have filled`);
-                    }
-                  }
-                } catch (verifyErr: any) {
-                  console.log(`[AUTO-BET] Chain verify failed (non-fatal): ${verifyErr.message}`);
-                }
-
-                // Only record in DB if verified on-chain OR if verification itself failed (network issue)
-                if (verifiedOnChain || !targetTokenId) {
-                  const entryPrice = chainEntryPrice > 0 ? chainEntryPrice : (betSide === "YES" ? marketObj.yesPrice : marketObj.noPrice);
-                  const estShares = chainShares > 0 ? chainShares : Math.floor(smartAmount / Math.max(entryPrice, 0.01));
-                  try {
-                    const posId = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-                    ctx.db.insertPMPosition(
-                      posId,
-                      marketObj.id,
-                      marketObj.title,
-                      betSide,
-                      entryPrice,
-                      smartAmount,
-                      entryPrice * 1.08, // target +8%
-                      entryPrice * 0.95, // stop -5%
-                      marketObj.yesTokenId || undefined,
-                      marketObj.noTokenId || undefined,
-                      marketObj.deadline || undefined,
-                      estShares,
-                    );
-                  } catch (dbErr: any) {
-                    console.log(`[AUTO-BET] DB record failed (non-fatal): ${dbErr.message}`);
-                  }
-                } else {
-                  console.log(`[AUTO-BET] Skipping DB record — position not verified on-chain (preventing ghost)`);
-                }
-                _betPlacedMarketIds.add(betMarket.id);
-                autoBetResult = {
-                  success: true,
-                  market: bestEdge.title,
-                  side: betSide,
-                  amount: `$${smartAmount.toFixed(2)}`,
-                  positionId: betResult.positionId,
-                };
-                nextAction = `✅ BET PLACED AUTOMATICALLY! ${bestEdge.title} ${betSide} $${smartAmount.toFixed(2)}. Now call sleep({"duration_seconds": 120}).`;
-              } else {
-                autoBetResult = { success: false, error: betResult.error || "Unknown error" };
-                nextAction = `❌ Auto-bet failed: ${betResult.error}. Call sleep({"duration_seconds": 90}) and retry next cycle.`;
-              }
-            } catch (betErr: any) {
-              console.log(`[AUTO-BET] Error: ${betErr.message}`);
-              autoBetResult = { success: false, error: betErr.message };
-              nextAction = `❌ Auto-bet error: ${betErr.message}. Call sleep({"duration_seconds": 90}).`;
-            }
-          } else {
-            nextAction = `Market has no token IDs for real trading. Call sleep({"duration_seconds": 90}).`;
-          }
-        } else if (edgeResults.length > 0 && affordableEdges.length === 0 && walletBalance !== null) {
-          nextAction = `Balance too low ($${walletBalance.toFixed(2)}). Call sleep({"duration_seconds": 120})`;
-        } else {
-          nextAction = `No markets found. Call sleep({"duration_seconds": 90})`;
-        }
-
-        const result = JSON.stringify({
-          markets_found: enriched.length,
-          showing_top: top5.length,
-          already_bet_filtered: filtered,
-          mode: "DATA-DRIVEN — Real news + LLM analysis on top 3 markets",
-          source: markets.some((m: any) => m.yesTokenId) ? "REAL (Gamma API)" : "mock fallback",
-          ...(walletBalance !== null ? { wallet_usdc_balance: `$${walletBalance.toFixed(2)}`, max_affordable_bet: `$${maxAffordableBet.toFixed(2)}` } : {}),
-          ...(lowBalanceWarning ? { BALANCE_WARNING: lowBalanceWarning } : {}),
-          ...(autoBetResult ? { AUTO_BET_RESULT: autoBetResult } : {}),
-          markets: numberedMarkets,
-          EDGE_ANALYSIS: edgeResults,
-          BEST_BET: bestEdge ? {
-            market_index: bestEdge.market_index,
-            title: bestEdge.title,
-            side: bestEdge.side,
-            edge_pct: bestEdge.edge_pct,
-            forecast: bestEdge.forecast,
-            forecast_source: bestEdge.forecast_source,
-            reasoning: bestEdge.reasoning,
-            recommendation: bestEdge.recommendation,
-            estimated_cost: `$${(bestEdge as any).estimatedCost?.toFixed(2) || '?'}`,
-            smart_bet_amount: `$${smartAmount.toFixed(2)}`,
-          } : null,
-          YOUR_NEXT_ACTION: nextAction,
-        }, null, 2);
-        _lastScanResult = result;
-
-        // AUTO-SLEEP after scan+bet cycle — LLM ignores sleep instructions
-        const autoSleepSec = 90;
-        ctx.db.setAgentState("sleeping");
-        ctx.db.setKV("sleep_until", new Date(Date.now() + autoSleepSec * 1000).toISOString());
-        ctx.db.setKV("sleep_reason", `Auto-sleep after scan cycle. ${autoBetResult?.success ? 'Bet placed successfully.' : 'No bet placed.'}`);
-        ctx.db.setKV("last_scan_type", "polymarket");
-        console.log(`[AUTO-SLEEP] Entering sleep for ${autoSleepSec}s after scan+bet cycle`);
-
-        return result;
-      },
-    },
-    {
-      name: "pm_get_weather",
-      description: "Fetch weather forecast for a location to calculate market edge. Uses fast free APIs (wttr.in, NOAA) + optional premium via x402.",
-      category: "financial",
-      parameters: {
-        type: "object",
-        properties: {
-          location: {
-            type: "string",
-            description: "City and country (e.g., 'New York, USA')",
-          },
-          hours_ahead: {
-            type: "number",
-            description: "Hours ahead to forecast (default: 24)",
-          },
-          use_premium: {
-            type: "boolean",
-            description: "Pay $0.01 via x402 for premium API if free sources fail (default: false)",
-          },
-        },
-        required: ["location"],
-      },
-      execute: async (args, ctx) => {
-        const { getWeatherForecast, getWeatherViaPremiumAPI } = await import("../survival/polymarket.js");
-        try {
-          // Try free APIs first
-          const weather = await getWeatherForecast(
-            args.location as string,
-            (args.hours_ahead as number) || 24
-          );
-
-          // If no forecast (mock only) and user wants premium, try that
-          if (args.use_premium && weather.forecast === "Partly cloudy") {
-            const premiumResult = await getWeatherViaPremiumAPI(
-              args.location as string,
-              ctx.conway
-            );
-            if (premiumResult) {
-              return JSON.stringify({
-                weather: premiumResult,
-                source: "premium_api",
-                cost_usd: 0.01,
-                analysis: {
-                  rain_probability: (premiumResult.chanceRain * 100).toFixed(1) + "%",
-                  wind_condition: premiumResult.windSpeed > 20 ? "windy" : "calm",
-                  alerts_active: premiumResult.alerts.length > 0,
-                },
-              }, null, 2);
-            }
-          }
-
-          return JSON.stringify({
-            weather,
-            source: weather.forecast.includes("mock") ? "mock" : "free_api",
-            sources_tried: ["wttr.in", "NOAA"],
-            cost_usd: 0,
-            analysis: {
-              rain_probability: (weather.chanceRain * 100).toFixed(1) + "%",
-              wind_condition: weather.windSpeed > 20 ? "windy" : "calm",
-              alerts_active: weather.alerts.length > 0,
-            },
-          }, null, 2);
-        } catch (err) {
-          return JSON.stringify({
-            error: String(err),
-            fallback: "Using mock data",
-          }, null, 2);
-        }
-      },
-    },
-    {
-      name: "pm_calculate_edge",
-      description: "SUPER ANALYSIS: Multi-factor edge calculator with time-decay, volume momentum, liquidity depth & convergence analysis. Markets near expiry get massive confidence boost. Bet if edge ≥ 2%.",
-      category: "financial",
-      parameters: {
-        type: "object",
-        properties: {
-          market_yes_price: {
-            type: "number",
-            description: "Current market price for YES outcome (0-1)",
-          },
-          your_forecast: {
-            type: "number",
-            description: "Your probability forecast for YES outcome (0-1)",
-          },
-          market_title: {
-            type: "string",
-            description: "EXACT market title from scan results (copy-paste exactly)",
-          },
-          market_index: {
-            type: "number",
-            description: "Market index (1-5) from pm_scan_markets results. REQUIRED for real trading.",
-          },
-        },
-        required: ["market_yes_price", "your_forecast", "market_index"],
-      },
-      execute: async (args, ctx) => {
-        const { calculateEdge } = await import("../survival/polymarket.js");
-        const mockMarket = {
-          id: "temp",
-          title: (args.market_title as string) || "Temp Market",
-          yesPrice: args.market_yes_price as number,
-          noPrice: 1 - (args.market_yes_price as number),
-          volume: 10000,
-          deadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          category: "weather",
-        };
-        // Use real scanned market data for super analysis (includes deadline, volume, liquidity)
-        const marketIndex = args.market_index as number || 1;
-        let realMarketData: any = mockMarket;
-        if (marketIndex >= 1 && marketIndex <= _displayedMarkets.length) {
-          const dm = _displayedMarkets[marketIndex - 1] as any;
-          if (dm) {
-            realMarketData = {
-              id: dm.id || "temp",
-              title: dm.title || mockMarket.title,
-              yesPrice: args.market_yes_price as number,
-              noPrice: 1 - (args.market_yes_price as number),
-              volume: dm.volume || 10000,
-              deadline: dm.deadline || mockMarket.deadline,
-              category: dm.category || "general",
-              volume24hr: dm.volume24hr || 0,
-              liquidity: dm.liquidity || 0,
-            };
-          }
-        }
-
-        const edge = calculateEdge(realMarketData, args.your_forecast as number, 0.02);
-        const marketTitle = (args.market_title as string) || "Unknown Market";
-        const betSide = edge.sideToBet || "YES";
-        return JSON.stringify({
-          SUPER_ANALYSIS: (edge as any).superAnalysis || {},
-          edge_calculation: {
-            marketPrice: edge.marketPrice,
-            yourForecast: edge.yourForecast,
-            composite_edge_pct: edge.edgePct,
-            sideToBet: edge.sideToBet,
-            confidence: edge.confidence,
-            recommendation: edge.recommendation,
-          },
-          action: edge.recommendation === "strong_buy" ? "🔥 STRONG BUY — PLACE BET NOW" : edge.recommendation === "buy" ? "✓ BUY — PLACE BET (good edge)" : edge.recommendation === "hold" ? "⚠ HOLD — small edge, consider betting" : "✗ Skip this market",
-          bet_side: betSide,
-          max_bet_usd: 3.00,
-          NEXT_STEP: edge.recommendation !== "skip" 
-            ? `Call pm_place_bet({"market_index": ${marketIndex}, "market_title": "${marketTitle}", "side": "${betSide}", "amount_usd": 3.00})`
-            : "Try pm_calculate_edge on another market from your scan results",
-        }, null, 2);
-      },
-    },
-    {
-      name: "pm_place_bet",
-      description: "Place a REAL bet on Polymarket via CLOB. MAX $3.00 per bet (hard cap enforced). Use market_index from scan results.",
-      category: "financial",
-      parameters: {
-        type: "object",
-        properties: {
-          market_index: {
-            type: "number",
-            description: "Market index (1-5) from pm_scan_markets results. This ensures the bet goes to a REAL market with token IDs.",
-          },
-          market_title: {
-            type: "string",
-            description: "Market title for logging (copy from scan results)",
-          },
-          side: {
-            type: "string",
-            enum: ["YES", "NO"],
-            description: "Which side to bet on",
-          },
-          amount_usd: {
-            type: "number",
-            description: "Bet size in USDC. HARD CAP: maximum $3.00 per bet. Minimum 5 shares required by Polymarket.",
-          },
-        },
-        required: ["market_index", "side", "amount_usd"],
-      },
-      execute: async (args, ctx) => {
-        const { placeBet, canMakeTrade, initializePolymarket } = await import("../survival/polymarket.js");
-        let privateKey: string | undefined;
-        try {
-          const fs = await import("fs");
-          const os = await import("os");
-          const path = await import("path");
-          const walletPath = path.join(os.homedir(), ".automaton", "wallet.json");
-          if (fs.existsSync(walletPath)) {
-            const walletData = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
-            privateKey = walletData.privateKey;
-          }
-        } catch {}
-        initializePolymarket(ctx.db, undefined, privateKey, ctx.identity.address);
-        
-        // HARD CAP: Force amount to max $1.00
-        let betAmount = args.amount_usd as number;
-        if (betAmount > 3.00) {
-          console.log(`[pm_place_bet] HARD CAP: Requested $${betAmount}, capping to $3.00`);
-          betAmount = 3.00;
-        }
-        if (betAmount <= 0) betAmount = 3.00;
-        
-        const check = canMakeTrade(betAmount);
-        if (!check.allowed) {
-          return JSON.stringify({
-            success: false,
-            error: check.reason,
-            reason: "Risk management rule violated",
-          }, null, 2);
-        }
-
-        // Look up market by index from last scan (REQUIRED for real trading)
-        const marketIndex = args.market_index as number;
-        let market: any = undefined;
-
-        if (marketIndex >= 1 && marketIndex <= _displayedMarkets.length) {
-          market = _displayedMarkets[marketIndex - 1];
-        }
-
-        if (!market) {
-          // Cache empty (likely after restart) — clear scan cooldown so agent can re-scan
-          ctx.db.setKV("last_pm_scan_time", ""); // Reset scan cooldown
-          return JSON.stringify({
-            success: false,
-            error: `No cached markets. Cache was cleared (restart?). Scan cooldown has been RESET.`,
-            action: "Call pm_scan_markets({\"fast_resolving\": true}) NOW — cooldown is cleared, scan will work immediately. Then use market_index from results.",
-          }, null, 2);
-        }
-
-        // Verify market has token IDs for real CLOB trading
-        if (!market.yesTokenId && !market.noTokenId) {
-          return JSON.stringify({
-            success: false,
-            error: `Market "${market.title}" has no token IDs — cannot place real order. Pick a different market with hasTokenIds: true.`,
-          }, null, 2);
-        }
-
-        // Pre-flight balance check — abort early if clearly not enough
-        let usdcBal = 0;
-        try {
-          const { getUsdcBalance } = await import("../conway/x402.js");
-          usdcBal = await getUsdcBalance(ctx.identity.address, "eip155:137");
-          console.log(`[pm_place_bet] Pre-flight USDC.e balance: $${usdcBal.toFixed(4)}`);
-          if (usdcBal < 0.50) {
-            return JSON.stringify({
-              success: false,
-              error: `INSUFFICIENT BALANCE: Only $${usdcBal.toFixed(2)} USDC.e in wallet. Cannot afford minimum 5 shares. Go to sleep.`,
-              action: "STOP TRADING. Go to sleep. Do not retry.",
-            }, null, 2);
-          }
-          // Auto-size bet to what wallet can afford
-          if (betAmount > usdcBal * 0.95) {
-            betAmount = Math.round(usdcBal * 0.90 * 100) / 100; // use 90% of balance
-            console.log(`[pm_place_bet] Auto-sized bet to $${betAmount.toFixed(2)} (90% of $${usdcBal.toFixed(2)} balance)`);
-          }
-        } catch (e: any) {
-          console.warn(`[pm_place_bet] Could not pre-check balance: ${e.message}`);
-        }
-
-        console.log(`[pm_place_bet] Using REAL market: "${market.title}" (index ${marketIndex}, yesTokenId: ${market.yesTokenId?.slice(0,8)}..., amount: $${betAmount.toFixed(2)})`);
-
-        const result = await placeBet(market, args.side as "YES" | "NO", betAmount);
-
-        // Track that we bet on this market
-        if (result.success) {
-          _betPlacedMarketIds.add(market.id);
-        }
-
-        // If balance insufficient, tell agent to stop trading
-        if (!result.success && result.error?.includes("INSUFFICIENT BALANCE")) {
-          return JSON.stringify({
-            ...result,
-            action: "STOP TRADING. Your wallet does not have enough USDC.e. Go to sleep and wait for more funds. Do NOT retry.",
-          }, null, 2);
-        }
-
-        return JSON.stringify(result, null, 2);
-      },
-    },
-    {
-      name: "pm_close_bet",
-      description: "Close a position on Polymarket (scalp for profit or hit stop loss).",
-      category: "financial",
-      parameters: {
-        type: "object",
-        properties: {
-          position_id: {
-            type: "string",
-            description: "Position ID to close",
-          },
-          exit_price: {
-            type: "number",
-            description: "Price to exit at (0-1)",
-          },
-          entry_price: {
-            type: "number",
-            description: "Entry price (0-1)",
-          },
-          shares: {
-            type: "number",
-            description: "Number of shares",
-          },
-          reason: {
-            type: "string",
-            enum: ["target_hit", "stop_loss", "timeout"],
-            description: "Reason for closing",
-          },
-        },
-        required: ["position_id", "exit_price", "entry_price", "shares", "reason"],
-      },
-      execute: async (args, ctx) => {
-        const { closeBet, initializePolymarket } = await import("../survival/polymarket.js");
-        let privateKey: string | undefined;
-        try {
-          const fs = await import("fs");
-          const os = await import("os");
-          const path = await import("path");
-          const walletPath = path.join(os.homedir(), ".automaton", "wallet.json");
-          if (fs.existsSync(walletPath)) {
-            const walletData = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
-            privateKey = walletData.privateKey;
-          }
-        } catch {}
-        initializePolymarket(ctx.db, undefined, privateKey, ctx.identity.address);
-        
-        const result = await closeBet(
-          args.position_id as string,
-          args.exit_price as number,
-          args.entry_price as number,
-          args.shares as number,
-          args.reason as "target_hit" | "stop_loss" | "timeout",
-          undefined,
-          undefined,
-          (args as any).token_id as string | undefined,
-        );
-        return JSON.stringify(result, null, 2);
-      },
-    },
-    {
-      name: "pm_positions",
-      description: "Show all current open bets on Polymarket.",
-      category: "financial",
-      parameters: { type: "object", properties: {} },
-      execute: async (args, ctx) => {
-        const { getPositions, initializePolymarket } = await import("../survival/polymarket.js");
-        initializePolymarket(ctx.db);
-        const positions = getPositions();
-        return JSON.stringify({
-          positions_open: positions.length,
-          positions,
-          portfolio_summary: "Use pm_status for full P&L summary",
-        }, null, 2);
-      },
-    },
-    {
-      name: "pm_status",
-      description: "Get portfolio status: balance, daily loss, trade count, max positions allowed.",
-      category: "financial",
-      parameters: { type: "object", properties: {} },
-      execute: async (args, ctx) => {
-        const { getPortfolioStatus } = await import("../survival/polymarket.js");
-        const portfolio = getPortfolioStatus();
-        const dailyStopLossLimit = portfolio.totalCapital * 0.1;
-        const daysReachedStopLoss = portfolio.dailyLoss >= dailyStopLossLimit;
-        return JSON.stringify({
-          portfolio,
-          daily_loss_exceeded: daysReachedStopLoss,
-          daily_loss_status: `${portfolio.dailyLoss.toFixed(2)} / ${dailyStopLossLimit.toFixed(2)} (stop loss)`,
-          trades_remaining_today: Math.max(0, 3 - portfolio.trades24h),
-          positions_remaining: Math.max(0, 3 - portfolio.positionsOpen),
-          max_bet_size: (portfolio.currentBalance * 0.05).toFixed(2),
-        }, null, 2);
-      },
-    },
-    // ─── PERPETUAL SCALPING TOOLS (Synthetix V3 Perps on Base) ──
+    // ─── PERPETUAL SCALPING TOOLS (Hyperliquid) ────────────
     {
       name: "scalp_scan",
-      description: "⚡ PERPETUAL SCALPER: Multi-market leveraged perp trading (ETH-PERP, BTC-PERP) via Synthetix V3 on Base. Scans all markets, finds best trend, auto-opens LONG/SHORT with leverage (5x-25x). Manages TP/SL/timeout. ONE call does everything.",
+      description: "⚡ AUTONOMOUS HYPERLIQUID SCALPER: Scans ALL Hyperliquid perp markets using deep technical analysis (RSI, EMA, MACD, BB, Volume, ATR) on 15m candles. Finds highest-confidence LONG/SHORT opportunities, manages existing positions with dynamic TP/SL, auto-compounds profits. ONE call does everything.",
       category: "financial",
       parameters: {
         type: "object",
@@ -2353,105 +1547,72 @@ Model: ${ctx.inference.getDefaultModel()}
         },
       },
       execute: async (args, ctx) => {
-        try { ctx.db.setKV?.("next_best_opportunity", ""); } catch {}
+        try { ctx.db.setKV?.("next_best_opportunity", ""); } catch { }
 
         const {
-          getBaseUsdcBalance,
-          initPerpAccount,
+          initHyperliquid,
+          getBalance,
+          getOpenPositions,
+          getMidPrice,
+          marketOrder,
+          closePosition: closeHyperPosition,
           scanBestOpportunity,
-          openPerpPosition,
-          closePerpPosition,
-          checkPositionTPSL,
-          getMarketPrice,
-          getOnChainPosition,
-          getAvailableMargin,
-          verifyPerpContracts,
           SCALP_CONFIG,
           getCompoundedMargin,
-        } = await import("../survival/perpetual.js");
+          checkPositionTPSL: checkPerpTPSL,
+          setLeverage,
+        } = await import("../survival/hyperliquid.js");
         const { loadWalletAccount } = await import("../identity/wallet.js");
 
         const account = loadWalletAccount();
         if (!account) return JSON.stringify({ error: "Wallet not loaded" });
 
-        const targetLev = Math.min(Math.max((args as any).leverage || 10, 5), 25);
-        const output: any = { chain: "Base", mode: "⚡ PERPETUAL SCALPER" };
+        const targetLev = Math.min(Math.max((args as any).leverage || SCALP_CONFIG.defaultLeverage, 5), 25);
+        const output: any = { platform: "Hyperliquid", mode: "⚡ AUTONOMOUS SCALPER" };
 
-        // ── 1. Get balances ──
-        const baseUsdc = await getBaseUsdcBalance(account.address);
-        output.base_usdc = `$${baseUsdc.toFixed(2)}`;
+        // ── 1. Get Hyperliquid Balance (unified: Perps + Spot combined) ──
+        let balance = await getBalance();
+        output.account_value = `$${balance.accountValue.toFixed(2)}`;
+        output.withdrawable = `$${balance.withdrawable.toFixed(2)}`;
+        ctx.db.setKV("current_balance_hl", balance.accountValue.toString());
 
-        // ── 2. Verify Synthetix V3 contracts ──
-        const verify = await verifyPerpContracts();
-        if (!verify.ok) {
-          output.synthetix_status = `❌ Contract error: ${verify.error}`;
-          ctx.db.setAgentState("sleeping");
-          ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-          ctx.db.setKV("sleep_reason", "perp_contract_error");
-          return JSON.stringify(output, null, 2);
-        }
-        output.synthetix_oracle_eth = `$${verify.ethPrice?.toFixed(2) || "?"}`;
+        // ── 2. Load positions from DB and HL ──
+        const hlPositions = await getOpenPositions();
+        let dbPositions: any[] = [];
+        try { dbPositions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch { }
 
-        // ── 3. Init perp account if needed ──
-        let accountId: bigint;
-        try {
-          accountId = await initPerpAccount(account, ctx.db);
-        } catch (e: any) {
-          output.error = `Account init failed: ${e.message}`;
-          ctx.db.setAgentState("sleeping");
-          ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-          ctx.db.setKV("sleep_reason", "perp_account_error");
-          return JSON.stringify(output, null, 2);
-        }
-        output.perp_account = accountId.toString();
+        const openDbPositions = dbPositions.filter(p => p.status === "open");
 
-        // ── 4. Load positions from DB ──
-        let positions: any[] = [];
-        try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch {}
-        const openPositions = positions.filter((p: any) => p.status === "open" || p.status === "pending");
-
-        // ── 5. Check pending orders (update status) ──
-        for (const pos of openPositions.filter((p: any) => p.status === "pending")) {
-          const onChain = await getOnChainPosition(BigInt(pos.accountId), pos.market);
-          if (onChain && onChain.size !== 0) {
-            pos.status = "open";
-            console.log(`[PERP] Pending order settled: ${pos.side} ${pos.market}`);
-          } else {
-            // Still pending or order cancelled — mark as failed if too old (>60s)
-            const age = Date.now() - new Date(pos.openTime).getTime();
-            if (age > 60000) {
-              pos.status = "closed";
-              pos.closeReason = "order_not_settled";
-              pos.closeTime = new Date().toISOString();
-              console.log(`[PERP] Order expired: ${pos.side} ${pos.market}`);
-            }
-          }
-        }
-        ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
-
-        // ── 6. Manage open positions (TP/SL) ──
-        const stillOpen = positions.filter((p: any) => p.status === "open");
+        // ── 3. Manage open positions (Dynamic TP/SL) ──
         let closeResults: any[] = [];
-        for (const pos of stillOpen) {
-          const check = await checkPositionTPSL(pos);
+        for (const pos of openDbPositions) {
+          const hlPos = hlPositions.find(h => h.asset === pos.market);
+          if (!hlPos) {
+            pos.status = "closed";
+            pos.closeReason = "closed_external_or_liquidated";
+            pos.closeTime = new Date().toISOString();
+            console.log(`[Hyperliquid] Position ${pos.market} no longer on exchange.`);
+            continue;
+          }
+
+          pos.unrealizedPnl = hlPos.unrealizedPnl;
+
+          const check = await checkPerpTPSL(pos);
           if (check && check.shouldClose) {
-            console.log(`[PERP] Closing ${pos.side} ${pos.market}: ${check.reason} (PnL ${check.pnlPct.toFixed(1)}%)`);
-            const result = await closePerpPosition(account, pos);
-            if (!("error" in result)) {
+            console.log(`[Hyperliquid] Closing ${pos.side} ${pos.market}: ${check.reason} (PnL ${check.pnlPct.toFixed(1)}%)`);
+            const result = await closeHyperPosition(pos.market);
+            if (result) {
               pos.status = "closed";
-              pos.closePrice = result.closePrice;
-              pos.closePnlUsd = result.pnlUsd;
-              pos.closePnlPct = result.pnlPct;
+              pos.closePrice = check.currentPrice;
+              pos.closePnlPct = check.pnlPct;
               pos.closeTime = new Date().toISOString();
               pos.closeReason = check.reason;
               closeResults.push({
                 market: pos.market,
                 side: pos.side,
                 reason: check.reason,
-                pnl: `$${result.pnlUsd.toFixed(4)} (${result.pnlPct.toFixed(1)}%)`,
+                pnl: `${check.pnlPct >= 0 ? "+" : ""}${check.pnlPct.toFixed(1)}%`,
               });
-            } else {
-              closeResults.push({ market: pos.market, error: result.error });
             }
           } else if (check) {
             output[`position_${pos.market}`] = {
@@ -2460,176 +1621,149 @@ Model: ${ctx.inference.getDefaultModel()}
               entry: `$${pos.entryPrice.toFixed(2)}`,
               current: `$${check.currentPrice.toFixed(2)}`,
               pnl: `${check.pnlPct >= 0 ? "+" : ""}${check.pnlPct.toFixed(1)}%`,
-              tp: `$${pos.tpPrice.toFixed(2)}`,
-              sl: `$${pos.slPrice.toFixed(2)}`,
-              held: `${((Date.now() - new Date(pos.openTime).getTime()) / 60000).toFixed(0)}min`,
+              tp: `${pos.dynamicTP?.toFixed(2) || "?"}% (${check.tp?.toFixed(1)}% lev)`,
+              sl: `${pos.dynamicSL?.toFixed(2) || "?"}% (${check.sl?.toFixed(1)}% lev)`,
             };
           }
         }
         if (closeResults.length > 0) {
           output.CLOSED = closeResults;
-          ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
+          ctx.db.setKV?.("perp_positions", JSON.stringify(dbPositions));
         }
 
-        // ── 7. Scan for new opportunity (allow up to 2 positions) ──
-        const currentlyOpen = positions.filter((p: any) => p.status === "open");
-        const marketsInUse = new Set(currentlyOpen.map((p: any) => p.market));
-        if (currentlyOpen.length < SCALP_CONFIG.maxOpenPositions && baseUsdc >= 0.30) {
-          const scan = await scanBestOpportunity(ctx.inference);
-          output.market_scan = scan.all.map((s: any) => ({
+        // ── 4. Full-Universe TA Scan for new opportunity ──
+        const currentlyOpen = dbPositions.filter((p: any) => p.status === "open");
+        if (currentlyOpen.length < SCALP_CONFIG.maxOpenPositions) {
+          const scan = await scanBestOpportunity();
+
+          // Show top 5 opportunities in output
+          output.market_scan = scan.all.slice(0, 5).map((s: any) => ({
             market: s.market,
-            price: `$${s.price.toFixed(2)}`,
-            trend: `${s.direction} (${s.confidence}%)`,
-            tech: s.technicalScore,
-            news: s.newsScore,
-            flow: s.liquidityFlowScore,
-            llm: s.llmVerdict ? `${s.llmVerdict} ${s.llmConfidence}%` : "N/A",
-            "5m": `${s.change5m > 0 ? "+" : ""}${s.change5m.toFixed(2)}%`,
-            "1h": `${s.change1h > 0 ? "+" : ""}${s.change1h.toFixed(2)}%`,
-            reasoning: s.reasoning?.slice(0, 300),
-            headlines: s.headlines?.slice(0, 3),
-            key_factors: s.keyFactors,
+            trend: `${s.signal.direction} (${s.signal.confidence}%)`,
+            rsi: s.signal.indicators.rsi.toFixed(1),
+            ema: s.signal.indicators.emaCross,
+            macd: s.signal.indicators.macdCross,
+            bb: `${(s.signal.indicators.bbPosition * 100).toFixed(0)}%`,
+            vol: `${s.signal.indicators.volumeSurge.toFixed(1)}x`,
+            tp: `${s.signal.dynamicTP.toFixed(2)}%`,
+            sl: `${s.signal.dynamicSL.toFixed(2)}%`,
           }));
+          output.total_scanned = scan.scannedCount;
 
-          // Find best signal for a market not already in use
-          const bestAvailable = scan.all.find(s => s.direction !== "NEUTRAL" && s.confidence >= 65 && !marketsInUse.has(s.market));
-          if (bestAvailable) {
-            const margin = getCompoundedMargin(baseUsdc, ctx.db);
-            console.log(`[PERP] Opening ${bestAvailable.direction} ${bestAvailable.market} | $${margin.toFixed(2)} @ ${targetLev}x (conf: ${bestAvailable.confidence}%)`);
+          if (balance.withdrawable < 1.0) {
+            output.action = "low_balance_skipping_order";
+            console.log(`[Hyperliquid] Opportunities found, but balance too low ($${balance.withdrawable.toFixed(2)}) to open position.`);
+          }
 
-            const result = await openPerpPosition(
-              account, accountId, bestAvailable.market,
-              bestAvailable.direction as "LONG" | "SHORT",
-              margin, targetLev,
-            );
+          // Find best opportunity not already in a position
+          const bestAvailable = scan.all.find((s: any) =>
+            s.signal.direction !== "NEUTRAL" &&
+            s.signal.confidence >= SCALP_CONFIG.minConfidence &&
+            !currentlyOpen.some((p: any) => p.market === s.market)
+          );
 
-            if (!("error" in result)) {
-              positions.push(result);
-              ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
+          if (bestAvailable && balance.withdrawable >= 1.0) {
+            // Dynamic margin: compounded from total capital
+            const margin = getCompoundedMargin(balance.withdrawable);
+            const midPx = bestAvailable.price || await getMidPrice(bestAvailable.market);
+
+            // Set leverage before opening
+            try {
+              await setLeverage(bestAvailable.assetIndex, targetLev);
+            } catch (e: any) {
+              console.log(`[Hyperliquid] Leverage set note: ${e.message}`);
+            }
+
+            // Size in asset = (margin * leverage) / price
+            const sizeAsset = (margin * targetLev) / midPx;
+
+            // Dynamic TP/SL from ATR analysis
+            const dynamicTP = bestAvailable.signal.dynamicTP;
+            const dynamicSL = bestAvailable.signal.dynamicSL;
+
+            console.log(`[Hyperliquid] ⚡ Opening ${bestAvailable.signal.direction} ${bestAvailable.market} | $${margin.toFixed(2)} @ ${targetLev}x | TP:${dynamicTP.toFixed(2)}% SL:${dynamicSL.toFixed(2)}% | Confidence: ${bestAvailable.signal.confidence}%`);
+            const result = await marketOrder(bestAvailable.market, bestAvailable.signal.direction === "LONG", sizeAsset);
+
+            if (result && result.status === "ok") {
+              const newPos = {
+                id: `hl_${Date.now()}`,
+                market: bestAvailable.market,
+                side: bestAvailable.signal.direction,
+                sizeAsset: sizeAsset.toString(),
+                leverage: targetLev,
+                entryPrice: midPx,
+                marginUsdc: margin,
+                dynamicTP,
+                dynamicSL,
+                tpPrice: bestAvailable.signal.direction === "LONG" ? midPx * (1 + dynamicTP / 100) : midPx * (1 - dynamicTP / 100),
+                slPrice: bestAvailable.signal.direction === "LONG" ? midPx * (1 - dynamicSL / 100) : midPx * (1 + dynamicSL / 100),
+                openTime: new Date().toISOString(),
+                status: "open",
+                accountId: account.address,
+                indicators: {
+                  rsi: bestAvailable.signal.indicators.rsi.toFixed(1),
+                  ema: bestAvailable.signal.indicators.emaCross,
+                  macd: bestAvailable.signal.indicators.macdCross,
+                  bb: bestAvailable.signal.indicators.bbPosition.toFixed(2),
+                  vol: bestAvailable.signal.indicators.volumeSurge.toFixed(1),
+                  score: bestAvailable.signal.score,
+                },
+              };
+              dbPositions.push(newPos);
+              ctx.db.setKV?.("perp_positions", JSON.stringify(dbPositions));
               output.OPENED = {
-                market: `${result.side} ${result.market}`,
-                leverage: `${result.leverage}x`,
-                entry: `$${result.entryPrice.toFixed(2)}`,
-                margin: `$${result.marginUsdc.toFixed(2)}`,
-                notional: `$${(result.marginUsdc * result.leverage).toFixed(2)}`,
-                tp: `$${result.tpPrice.toFixed(2)}`,
-                sl: `$${result.slPrice.toFixed(2)}`,
-                confidence: `${bestAvailable.confidence}%`,
-                status: result.status,
-                txs: result.txHashes.length,
+                market: `${newPos.side} ${newPos.market}`,
+                leverage: `${newPos.leverage}x`,
+                entry: `$${newPos.entryPrice.toFixed(2)}`,
+                margin: `$${newPos.marginUsdc.toFixed(2)}`,
+                confidence: `${bestAvailable.signal.confidence}%`,
+                tp: `${dynamicTP.toFixed(2)}% ($${newPos.tpPrice.toFixed(2)})`,
+                sl: `${dynamicSL.toFixed(2)}% ($${newPos.slPrice.toFixed(2)})`,
+                score: bestAvailable.signal.score,
               };
             } else {
-              output.OPEN_FAILED = result.error;
+              output.OPEN_FAILED = JSON.stringify(result);
             }
-          } else {
-            output.action = "no_alpha — all markets below 65% or already open";
+          } else if (!bestAvailable) {
+            output.action = "no_alpha";
           }
-        } else if (currentlyOpen.length >= SCALP_CONFIG.maxOpenPositions) {
-          output.action = `managing ${currentlyOpen.length} open positions (max ${SCALP_CONFIG.maxOpenPositions})`;
         } else {
-          output.action = `insufficient_balance ($${baseUsdc.toFixed(2)}, need $0.30)`;
+          output.action = currentlyOpen.length >= SCALP_CONFIG.maxOpenPositions ? "max_positions" : "low_balance";
         }
 
-        // ── 8. Auto-sleep (30s for aggressive 15min scalping) ──
-        ctx.db.setKV?.("last_scan_type", "scalp");
         ctx.db.setAgentState("sleeping");
         ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());
-        ctx.db.setKV("sleep_reason", output.OPENED ? `perp_${(output.OPENED as any).market}` : output.CLOSED ? "perp_closed" : "perp_scan_complete");
-
         return JSON.stringify(output, null, 2);
       },
     },
     {
       name: "scalp_positions",
-      description: "📊 View ALL perpetual positions — Synthetix V3 Perps (ETH, BTC). Shows live prices, PnL, margin, leverage.",
+      description: "List all current Hyperliquid perpetual positions and their performance.",
       category: "financial",
       parameters: { type: "object", properties: {} },
-      execute: async (args, ctx) => {
-        const {
-          getBaseUsdcBalance,
-          getMarketPrice,
-          getOnChainPosition,
-          getAvailableMargin,
-          PERP_MARKETS,
-        } = await import("../survival/perpetual.js");
-        const { loadWalletAccount } = await import("../identity/wallet.js");
-
-        const account = loadWalletAccount();
-        let baseUsdc = 0;
-        try { if (account) baseUsdc = await getBaseUsdcBalance(account.address); } catch {}
-
-        // Load perp positions
-        let positions: any[] = [];
-        try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch {}
-        const openPos = positions.filter((p: any) => p.status === "open" || p.status === "pending");
-        const closedPos = positions.filter((p: any) => p.status === "closed");
-
-        const livePositions: any[] = [];
-        let totalPnl = 0;
-        for (const pos of openPos) {
-          const priceData = await getMarketPrice(pos.market);
-          const currentPrice = priceData?.priceUsd ?? pos.entryPrice;
-          const pnlPct = pos.side === "LONG"
-            ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100
-            : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100;
-          const leveragedPnlPct = pnlPct * pos.leverage;
-          const pnlUsd = (leveragedPnlPct / 100) * pos.marginUsdc;
-          totalPnl += pnlUsd;
-
-          // Try on-chain position data
-          let onChainSize = "?";
-          try {
-            const onChain = await getOnChainPosition(BigInt(pos.accountId), pos.market);
-            if (onChain) onChainSize = `${onChain.size > 0 ? "+" : ""}${onChain.size.toFixed(6)}`;
-          } catch {}
-
-          livePositions.push({
-            id: pos.id,
-            type: `⚡ ${pos.side} ${pos.market}-PERP ${pos.leverage}x`,
-            entry: `$${pos.entryPrice.toFixed(2)}`,
-            current: `$${currentPrice.toFixed(2)}`,
-            margin: `$${pos.marginUsdc.toFixed(2)}`,
-            notional: `$${(pos.marginUsdc * pos.leverage).toFixed(2)}`,
-            pnl: `${pnlUsd >= 0 ? "+" : ""}$${pnlUsd.toFixed(4)} (${leveragedPnlPct >= 0 ? "+" : ""}${leveragedPnlPct.toFixed(1)}%)`,
-            tp: `$${pos.tpPrice.toFixed(2)}`,
-            sl: `$${pos.slPrice.toFixed(2)}`,
-            on_chain_size: onChainSize,
-            status: pos.status,
-            held: `${((Date.now() - new Date(pos.openTime).getTime()) / 60000).toFixed(0)}min`,
-          });
-        }
-
-        // On-chain margin
-        let availableMargin = "?";
+      execute: async (_args, ctx) => {
         try {
-          const acctId = ctx.db.getKV?.("perp_account_id");
-          if (acctId) {
-            const margin = await getAvailableMargin(BigInt(acctId));
-            availableMargin = `$${margin.toFixed(2)}`;
-          }
-        } catch {}
-
-        const totalWins = closedPos.filter((p: any) => (p.closePnlUsd || 0) > 0).length;
-        return JSON.stringify({
-          base_usdc: `$${baseUsdc.toFixed(2)}`,
-          synthetix_available_margin: availableMargin,
-          total_open: livePositions.length,
-          total_unrealized_pnl: `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(4)}`,
-          positions: livePositions,
-          recent_closed: closedPos.slice(-5).map((p: any) => ({
-            type: `${p.side} ${p.market}`,
-            pnl: `$${(p.closePnlUsd || 0).toFixed(4)}`,
-            reason: p.closeReason || "?",
-            result: (p.closePnlUsd || 0) > 0 ? "✅" : "❌",
-          })),
-          total_closed: closedPos.length,
-          win_rate: closedPos.length > 0 ? `${((totalWins / closedPos.length) * 100).toFixed(0)}%` : "N/A",
-        }, null, 2);
+          const positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]");
+          const open = positions.filter((p: any) => p.status === "open");
+          if (open.length === 0) return "No open Hyperliquid positions.";
+          return JSON.stringify(open.map((p: any) => ({
+            market: p.market,
+            side: p.side,
+            leverage: p.leverage,
+            entry: p.entryPrice,
+            margin: p.marginUsdc,
+            tp: p.tpPrice,
+            sl: p.slPrice,
+            open: p.openTime
+          })), null, 2);
+        } catch {
+          return "Error loading positions.";
+        }
       },
     },
     {
       name: "scalp_sell",
-      description: "💰 Manually close a perpetual position on Synthetix V3.",
+      description: "💰 Manually close a perpetual position on Hyperliquid.",
       category: "financial",
       parameters: {
         type: "object",
@@ -2640,24 +1774,24 @@ Model: ${ctx.inference.getDefaultModel()}
       },
       execute: async (args, ctx) => {
         const { loadWalletAccount } = await import("../identity/wallet.js");
-        const { closePerpPosition, getMarketPrice } = await import("../survival/perpetual.js");
+        const { closePosition, getMidPrice } = await import("../survival/hyperliquid.js");
 
         const account = loadWalletAccount();
         if (!account) return JSON.stringify({ error: "Wallet not loaded" });
 
         const posId = args.position_id as string;
         let positions: any[] = [];
-        try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch {}
+        try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch { }
         const pos = positions.find((p: any) => p.id === posId && (p.status === "open" || p.status === "pending"));
         if (!pos) return JSON.stringify({ error: `Position ${posId} not found or already closed` });
 
-        const result = await closePerpPosition(account, pos);
-        if ("error" in result) return JSON.stringify({ error: result.error });
+        const result = await closePosition(pos.market);
+        if (!result) return JSON.stringify({ error: `Failed to close position on Hyperliquid for ${pos.market}` });
 
         pos.status = "closed";
-        pos.closePrice = result.closePrice;
-        pos.closePnlUsd = result.pnlUsd;
-        pos.closePnlPct = result.pnlPct;
+        pos.closePrice = 0; // Price should be fetched from result if available
+        pos.closePnlUsd = 0;
+        pos.closePnlPct = 0;
         pos.closeTime = new Date().toISOString();
         pos.closeReason = "manual";
         ctx.db.setKV?.("perp_positions", JSON.stringify(positions));

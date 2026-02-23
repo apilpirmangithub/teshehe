@@ -199,7 +199,6 @@ export interface HeartbeatPingPayload {
 export interface FinancialState {
   creditsCents: number;
   usdcBalance: number;
-  usdcBalancePolygon: number;
   lastChecked: string;
 }
 
@@ -499,122 +498,6 @@ export interface AutomatonDatabase {
   insertInboxMessage(msg: InboxMessage): void;
   getUnprocessedInboxMessages(limit: number): InboxMessage[];
   markInboxMessageProcessed(id: string): void;
-
-  // Polymarket Trading
-  insertPMPosition(
-    id: string,
-    marketId: string,
-    marketTitle: string,
-    side: "YES" | "NO",
-    entryPrice: number,
-    entryAmountUsd: number,
-    targetExitPrice: number,
-    stopLossPrice: number,
-    yesTokenId?: string,
-    noTokenId?: string,
-    deadline?: string,
-    shares?: number,
-  ): void;
-  closePMPosition(
-    id: string,
-    exitPrice: number,
-    exitAmountUsd: number,
-    reason: "target_hit" | "stop_loss" | "timeout",
-    pnlUsd: number,
-    pnlPct: number,
-  ): void;
-  getPMPositions(
-    status?: "open" | "closed",
-  ): Array<{
-    id: string;
-    marketId: string;
-    marketTitle: string;
-    side: string;
-    entryPrice: number;
-    entryAmount: number;
-    entryTime: string;
-    currentPrice: number | null;
-    targetExitPrice: number | null;
-    stopLossPrice: number | null;
-    pnlUsd: number;
-    pnlPct: number;
-    status: string;
-    closeReason: string | null;
-    closedAt: string | null;
-    yesTokenId: string | null;
-    noTokenId: string | null;
-    deadline: string | null;
-    shares: number | null;
-  }>;
-  insertPMTrade(
-    id: string,
-    marketId: string,
-    marketTitle: string,
-    side: "YES" | "NO",
-    entryPrice: number,
-    entryAmountUsd: number,
-    exitPrice: number,
-    exitAmountUsd: number,
-    reason: "target_hit" | "stop_loss" | "timeout" | "manual",
-    pnlUsd: number,
-    pnlPct: number,
-    holdingMinutes: number,
-    weatherCondition?: string,
-    edgePct?: number,
-  ): void;
-  getPMTradeHistory(
-    limit?: number,
-  ): Array<{
-    marketTitle: string;
-    side: string;
-    pnlUsd: number;
-    pnlPct: number;
-    reason: string;
-    createdAt: string;
-  }>;
-  insertPMPortfolioSnapshot(
-    id: string,
-    totalCapitalUsd: number,
-    currentBalanceUsd: number,
-    positionsOpen: number,
-    pnlTodayUsd: number,
-    tradsToday: number,
-    winCount: number,
-    lossCount: number,
-    dailyMaxLossReached: boolean,
-    note?: string,
-  ): void;
-  getPMPortfolioStats(): {
-    winCount: number;
-    lossCount: number;
-    totalTrades: number;
-    avgPnlPct: number;
-    bestTrade: number;
-    worstTrade: number;
-    totalPnl: number;
-    winRate: number | string;
-  };
-  insertPMEdge(
-    id: string,
-    marketId: string,
-    marketTitle: string,
-    location: string | undefined,
-    weatherForecast: string,
-    marketPriceYes: number,
-    yourForecastPct: number,
-    edgePct: number,
-    recommendation: "strong_buy" | "buy" | "hold" | "skip",
-    betPlaced: boolean,
-    notes?: string,
-  ): void;
-  getPMEdgeAnalysis(
-    hoursBack?: number,
-  ): Array<{
-    recommendation: string;
-    edgePct: number;
-    totalOpportunities: number;
-    betsMade: number;
-  }>;
 
   // State
   getAgentState(): AgentState;

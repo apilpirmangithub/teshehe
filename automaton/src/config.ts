@@ -4,6 +4,7 @@
  * Loads and saves the automaton's configuration from ~/.automaton/automaton.json
  */
 
+import os from "os";
 import fs from "fs";
 import path from "path";
 import type { AutomatonConfig } from "./types.js";
@@ -62,7 +63,8 @@ export function saveConfig(config: AutomatonConfig): void {
  */
 export function resolvePath(p: string): string {
   if (p.startsWith("~")) {
-    return path.join(process.env.HOME || "/root", p.slice(1));
+    const homedir = os.homedir();
+    return path.join(homedir, p.slice(1));
   }
   return p;
 }

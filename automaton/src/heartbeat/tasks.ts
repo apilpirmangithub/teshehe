@@ -102,29 +102,30 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
 
   check_usdc_balance: async (ctx) => {
     let balanceBase = 0;
-    let balancePolygon = 0;
-    try { balanceBase = await getUsdcBalance(ctx.identity.address, "eip155:8453"); } catch {}
-    try { balancePolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch {}
-    const totalBalance = balanceBase + balancePolygon;
+    let balanceHL = 0;
+    try { balanceBase = await getUsdcBalance(ctx.identity.address, "eip155:8453"); } catch { }
+    try {
+      const { getBalance } = await import("../survival/hyperliquid.js");
+      const hl = await getBalance();
+      balanceHL = hl.accountValue;
+    } catch { }
 
     ctx.db.setKV("last_usdc_check", JSON.stringify({
       balanceBase,
-      balancePolygon,
-      total: totalBalance,
+      balanceHL,
+      total: balanceBase + balanceHL,
       timestamp: new Date().toISOString(),
     }));
 
-    // Only wake if TOTAL USDC across all chains is very low (< $0.10)
-    // Having low Base but healthy Polygon is NORMAL — Polygon is for Polymarket trading
+    // Wake if total capital is critically low (< $0.10)
     const credits = await ctx.conway.getCreditsBalance();
-    if (totalBalance < 0.10 && credits < 500) {
+    if ((balanceBase + balanceHL) < 0.10 && credits < 500) {
       return {
         shouldWake: true,
-        message: `⚠️ TOTAL USDC critically low: $${totalBalance.toFixed(4)} (Base: ${balanceBase.toFixed(4)} + Polygon: ${balancePolygon.toFixed(4)}). Credits: $${(credits / 100).toFixed(2)}. Need funding.`,
+        message: `⚠️ Capital critically low: Base $${balanceBase.toFixed(4)}, HL $${balanceHL.toFixed(2)}. Credits: $${(credits / 100).toFixed(2)}. Need funding.`,
       };
     }
 
-    // Log balance but don't wake — having USDC on Polygon is perfectly fine
     return { shouldWake: false };
   },
 
@@ -205,138 +206,32 @@ export const BUILTIN_TASKS: Record<string, HeartbeatTaskFn> = {
     return { shouldWake: false };
   },
 
-  scout_aerodrome: async (ctx) => {
-    // DEPRECATED - Replaced by Polymarket
-    return { shouldWake: false };
-  },
-
-  execute_trades: async (ctx) => {
-    // DEPRECATED - Replaced by Polymarket
-    return { shouldWake: false };
-  },
-
-  scan_polymarket: async (ctx) => {
+  scan_perp: async (ctx) => {
     // Only wake agent to scan if not already recently scanned (avoid constant waking)
-    const lastScan = ctx.db.getKV("last_pm_scan_time");
+    const lastScan = ctx.db.getKV("last_perp_scan_time"); // Rename key to avoid confusion
     const lastScanTime = lastScan ? new Date(lastScan).getTime() : 0;
-    const minutesSinceLastScan = (Date.now() - lastScanTime) / 60_000;
+    const secondsSinceLastScan = (Date.now() - lastScanTime) / 1000;
 
-    // Wake every 3 minutes for aggressive trading (hustle mode)
-    if (minutesSinceLastScan < 3) {
+    // Wake every 30 seconds for ultra-aggressive perpetual scalping
+    if (secondsSinceLastScan < 30) {
       return { shouldWake: false };
     }
 
-    // ── SMART ROUTING: Check BOTH chains, pick BEST opportunity ──
-    let polygonBal = -1;
-    let baseBal = -1;
-    try {
-      const { getUsdcBalance } = await import("../conway/x402.js");
-      const walletAddr = ctx.db.getKV("wallet_address") || ctx.db.getIdentity?.("address") || "";
-      if (walletAddr) {
-        const addr = walletAddr as `0x${string}`;
-        [polygonBal, baseBal] = await Promise.all([
-          getUsdcBalance(addr, "eip155:137").catch(() => -1),
-          getUsdcBalance(addr, "eip155:8453").catch(() => -1),
-        ]);
-      }
-    } catch {}
-
-    // Count open positions on each chain
-    let pmOpenCount = 0;
-    let scalpOpenCount = 0;
     let perpOpen = false;
-    try { pmOpenCount = parseInt(ctx.db.getKV("pm_open_positions_count") || "0", 10); } catch {}
     try {
       const pp = JSON.parse(ctx.db.getKV("perp_positions") || "[]");
-      scalpOpenCount = pp.filter((p: any) => p.status === "open" || p.status === "pending").length;
-      perpOpen = scalpOpenCount > 0;
-    } catch {}
+      perpOpen = pp.some((p: any) => p.status === "open" || p.status === "pending");
+    } catch { }
 
-    const polymarketReady = polygonBal >= 0.50;
-    const scalpReady = baseBal >= 0.10 || perpOpen; // perp position open = must manage
-    const lastType = ctx.db.getKV("last_scan_type") || "";
-
-    // ── Decision matrix: SCALP now includes leveraged ETH + altcoins ──
-    let choice: "polymarket" | "scalp" = "scalp";
-    let reason = "";
-
-    if (!polymarketReady && !scalpReady) {
-      choice = "scalp";
-      reason = `⚠️ All chains low (Polygon $${polygonBal >= 0 ? polygonBal.toFixed(2) : "?"}, Base $${baseBal >= 0 ? baseBal.toFixed(2) : "?"}). Trying scalp_scan for micro opportunity.`;
-    } else if (!polymarketReady && scalpReady) {
-      choice = "scalp";
-      reason = `💰 Polygon low → Base $${baseBal >= 0 ? baseBal.toFixed(2) : "?"} perp scalping${perpOpen ? " (⚡ perp position open!)" : ""}.`;
-    } else if (polymarketReady && !scalpReady) {
-      choice = "polymarket";
-      reason = `💰 Base too low → Polygon $${polygonBal >= 0 ? polygonBal.toFixed(2) : "?"} Polymarket.`;
-    } else {
-      // ALL ready — score each strategy
-      const pmScore =
-        (polygonBal >= 0 ? Math.min(polygonBal, 3) : 0) * 1.0 +
-        Math.max(0, 3 - pmOpenCount) * 0.5 +
-        (lastType === "scalp" ? 1.5 : 0);
-
-      const scScore =
-        (baseBal >= 0 ? Math.min(baseBal, 5) : 0) * 1.0 +
-        Math.max(0, 2 - scalpOpenCount) * 0.8 +
-        (perpOpen ? 3.0 : 0) +                                    // must check open perp position!
-        (lastType === "polymarket" || lastType === "" ? 1.5 : 0);
-
-      // If leverage position is open, ALWAYS go to scalp (scalp_scan manages leverage)
-      if (perpOpen) {
-        choice = "scalp";
-        reason = `🔒 Open perp position → must monitor via scalp_scan. Sc ${scScore.toFixed(1)} vs PM ${pmScore.toFixed(1)}`;
-      } else if (pmScore >= scScore) {
-        choice = "polymarket";
-        reason = `🧠 Smart pick: PM ${pmScore.toFixed(1)} vs Sc ${scScore.toFixed(1)} (Polygon $${polygonBal.toFixed(2)}/${pmOpenCount} pos)`;
-      } else {
-        choice = "scalp";
-        reason = `🧠 Smart pick: Sc ${scScore.toFixed(1)} vs PM ${pmScore.toFixed(1)} (Base $${baseBal.toFixed(2)}/${scalpOpenCount} pos)`;
-      }
-    }
-
-    console.log(`[HEARTBEAT] ${reason} → ${choice}`);
-
-    // Store the decision so tools can enforce it if LLM disobeys
-    try { ctx.db.setKV("next_best_opportunity", choice); } catch {}
-
-    const toolMap = {
-      polymarket: `⚡ BEST OPPORTUNITY → POLYMARKET: ${reason}. Call pm_scan_markets({"fast_resolving": true}). Then sleep 2min.`,
-      scalp: `🔥 BEST OPPORTUNITY → SCALP: ${reason}. Call scalp_scan(). Then sleep 2min.`,
-    };
+    ctx.db.setKV("last_perp_scan_time", new Date().toISOString());
+    ctx.db.setKV("last_scan_type", "scalp");
 
     return {
       shouldWake: true,
-      message: toolMap[choice],
+      message: perpOpen
+        ? "🔥 MONITOR PERP POSITIONS: Open positions detected. Call scalp_scan() to manage TP/SL."
+        : "⚡ SCAN FOR PERP OPPORTUNITIES: Ready for next scalp. Call scalp_scan().",
     };
-  },
-
-  check_pm_positions: async (ctx) => {
-    // Only wake if there are actually open positions to monitor
-    const lastPositions = ctx.db.getKV("pm_open_positions_count");
-    const posCount = lastPositions ? parseInt(lastPositions, 10) : 0;
-
-    if (posCount > 0) {
-      return {
-        shouldWake: true,
-        message: `Monitor ${posCount} open position(s). Use ss_monitor or pm_positions. Exit: TP +6-9%, SL -3%, or time decay > 4h.`,
-      };
-    }
-    return { shouldWake: false };
-  },
-
-  enforce_daily_stop: async (ctx) => {
-    // Only wake for daily stop check if agent has traded today
-    const lastTradeCheck = ctx.db.getKV("pm_trades_today");
-    const tradesToday = lastTradeCheck ? parseInt(lastTradeCheck, 10) : 0;
-
-    if (tradesToday > 0) {
-      return {
-        shouldWake: true,
-        message: `Daily risk check: ${tradesToday} trade(s) today. Use ss_status to verify daily loss < -6% limit. If hit: STOP trading.`,
-      };
-    }
-    return { shouldWake: false };
   },
 
 };

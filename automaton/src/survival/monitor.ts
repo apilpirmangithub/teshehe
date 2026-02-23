@@ -34,19 +34,27 @@ export async function checkResources(
 ): Promise<ResourceStatus> {
   // Check credits
   let creditsCents = 0;
+  const lastStateStr = db.getKV("financial_state");
+  const lastState = lastStateStr ? JSON.parse(lastStateStr) : null;
+
   try {
     creditsCents = await conway.getCreditsBalance();
-  } catch {}
+  } catch (err: any) {
+    if (lastState) {
+      console.warn(`[Monitor] Failed to fetch credits from API (${err.message}). Using last known balance: ${formatCredits(lastState.creditsCents)}`);
+      creditsCents = lastState.creditsCents;
+    } else {
+      console.error(`[Monitor] Failed to fetch credits and no historical data found: ${err.message}`);
+    }
+  }
 
-  // Check USDC (Base + Polygon) — fetch independently so one failure doesn't zero both
+  // Primary capital: Hyperliquid L1 Account Value
   let usdcBalance = 0;
-  let usdcBalancePolygon = 0;
   try {
-    usdcBalance = await getUsdcBalance(identity.address, "eip155:8453");
-  } catch {}
-  try {
-    usdcBalancePolygon = await getUsdcBalance(identity.address, "eip155:137");
-  } catch {}
+    const { getBalance } = await import("../survival/hyperliquid.js");
+    const hl = await getBalance();
+    usdcBalance = hl.accountValue;
+  } catch { }
 
   // Check sandbox health
   let sandboxHealthy = true;
@@ -60,7 +68,6 @@ export async function checkResources(
   const financial: FinancialState = {
     creditsCents,
     usdcBalance,
-    usdcBalancePolygon,
     lastChecked: new Date().toISOString(),
   };
 
@@ -90,9 +97,7 @@ export async function checkResources(
 export function formatResourceReport(status: ResourceStatus): string {
   const lines = [
     `=== RESOURCE STATUS ===`,
-    `Credits: ${formatCredits(status.financial.creditsCents)}`,
-    `USDC (Base): ${status.financial.usdcBalance.toFixed(6)}`,
-    `USDC (Polygon): ${status.financial.usdcBalancePolygon.toFixed(6)}`,
+    `Balance check: ${formatCredits(status.financial.creditsCents)} credits, ${status.financial.usdcBalance.toFixed(4)} USDC`,
     `Tier: ${status.tier}${status.tierChanged ? ` (changed from ${status.previousTier})` : ""}`,
     `Sandbox: ${status.sandboxHealthy ? "healthy" : "UNHEALTHY"}`,
     `Checked: ${status.financial.lastChecked}`,

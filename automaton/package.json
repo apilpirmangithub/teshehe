@@ -37,7 +37,7 @@
   ],
   "license": "MIT",
   "scripts": {
-    "build": "tsc && pnpm -r build",
+    "build": "tsc && copy src\\dashboard\\index.html dist\\dashboard\\index.html && pnpm -r build",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "clean": "rm -rf dist && pnpm -r clean"
@@ -46,6 +46,9 @@
     "@ethersproject/contracts": "^5.8.0",
     "@ethersproject/providers": "^5.8.0",
     "@ethersproject/wallet": "^5.8.0",
+    "@nktkas/hyperliquid": "^0.31.0",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
     "@polymarket/clob-client": "^5.2.4",
     "@polymarket/order-utils": "^3.0.1",
     "axios": "^1.13.5",

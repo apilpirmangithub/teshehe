@@ -35,7 +35,21 @@ node dist/index.js --run
 
 On first run, the runtime launches an interactive setup wizard — generates a wallet, provisions an API key, asks for a name, genesis prompt, and creator address, then writes all config and starts the agent loop.
 
-For automated sandbox provisioning:
+### ☁️ Running on Conway Cloud (24/7)
+
+To keep your agent running even when your PC is off, use the migration utility:
+
+```bash
+node migrate_to_cloud.mjs
+```
+
+This will automatically:
+1. Provision a new high-performance sandbox on Conway Cloud.
+2. Transfer your current wallet, balance, and trading history.
+3. Start the agent loop remotely.
+4. Provide a URL to monitor the agent via the Conway Portal.
+
+For automated sandbox provisioning via curl:
 ```bash
 curl -fsSL https://conway.tech/automaton.sh | sh
 ```

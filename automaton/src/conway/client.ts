@@ -61,10 +61,15 @@ export function createConwayClient(
 
   // ─── Sandbox Operations (own sandbox) ────────────────────────
 
+  const noSandbox = !sandboxId;
+
   const exec = async (
     command: string,
     timeout?: number,
   ): Promise<ExecResult> => {
+    if (noSandbox) {
+      return { stdout: "", stderr: "No sandbox configured (running locally)", exitCode: 1 };
+    }
     const result = await request(
       "POST",
       `/v1/sandboxes/${sandboxId}/exec`,
@@ -81,6 +86,7 @@ export function createConwayClient(
     path: string,
     content: string,
   ): Promise<void> => {
+    if (noSandbox) return;
     await request(
       "POST",
       `/v1/sandboxes/${sandboxId}/files/upload/json`,
@@ -89,6 +95,7 @@ export function createConwayClient(
   };
 
   const readFile = async (filePath: string): Promise<string> => {
+    if (noSandbox) return "";
     const result = await request(
       "GET",
       `/v1/sandboxes/${sandboxId}/files/read?path=${encodeURIComponent(filePath)}`,
@@ -97,6 +104,9 @@ export function createConwayClient(
   };
 
   const exposePort = async (port: number): Promise<PortInfo> => {
+    if (noSandbox) {
+      return { port, publicUrl: `http://localhost:${port}`, sandboxId: "local" };
+    }
     const result = await request(
       "POST",
       `/v1/sandboxes/${sandboxId}/ports/expose`,
@@ -110,11 +120,13 @@ export function createConwayClient(
   };
 
   const removePort = async (port: number): Promise<void> => {
+    if (noSandbox) return;
     await request(
       "DELETE",
       `/v1/sandboxes/${sandboxId}/ports/${port}`,
     );
   };
+
 
   // ─── Sandbox Management (other sandboxes) ────────────────────
 

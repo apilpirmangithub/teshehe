@@ -22,6 +22,7 @@ import { runAgentLoop } from "./agent/loop.js";
 import { loadSkills } from "./skills/loader.js";
 import { initStateRepo } from "./git/state-versioning.js";
 import { createSocialClient } from "./social/client.js";
+import { startDashboardServer } from "./dashboard/server.js";
 import type { AutomatonIdentity, AgentState, Skill, SocialClientInterface } from "./types.js";
 
 const VERSION = "0.1.0";
@@ -218,6 +219,18 @@ async function run(): Promise<void> {
   // Store wallet address in KV for heartbeat tasks (balance checks)
   db.setKV("wallet_address", account.address);
 
+  // ─── Start Web Dashboard Server ──────────────────────────────
+  try {
+    startDashboardServer({
+      db,
+      config,
+      walletAddress: account.address,
+      port: 3000,
+    });
+  } catch (err: any) {
+    console.warn(`[${new Date().toISOString()}] Web Dashboard Server failed: ${err.message}`);
+  }
+
   // ─── Show Trading Dashboard at Startup ───────────────────────
   try {
     const { showDashboard } = await import("./dashboard/dashboard.js");
@@ -312,7 +325,7 @@ async function run(): Promise<void> {
       // Reload skills (may have changed since last loop)
       try {
         skills = loadSkills(skillsDir, db);
-      } catch {}
+      } catch { }
 
       // Run the agent loop
       await runAgentLoop({
