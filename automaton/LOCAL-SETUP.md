@@ -56,32 +56,21 @@ pnpm install
 pnpm run build
 ```
 
-### 6. Copy Data dari Codespaces
+### 6. Identity Setup (Pilih salah satu)
 
-**PENTING:** Kamu perlu menyalin folder `~/.automaton/` dari Codespaces ke PC lokal.
-
-Jalankan di **Codespaces** untuk membuat backup:
-
-```bash
-cd /workspaces/teshehe/automaton
-node scripts/export-local.js
-```
-
-Ini akan membuat file `automaton-backup.tar.gz`. Download file ini ke PC kamu.
-
-Kemudian di **PowerShell** di PC lokal:
-
+#### Opsi A: Mulai Baru (Disarankan untuk User Baru)
+Jalankan agen dan biarkan wizard membuat wallet baru untukmu:
 ```powershell
-# Buat folder .automaton di home directory
-mkdir $env:USERPROFILE\.automaton
-
-# Extract backup (pakai Git Bash atau 7-Zip)
-# Atau salin manual file-file berikut ke C:\Users\NAMAMU\.automaton\:
-#   - automaton.json   (config utama)
-#   - wallet.json      (⚠️ PRIVATE KEY - jaga kerahasiaannya!)
-#   - state.db         (database state)
-#   - heartbeat.yml    (heartbeat config)
+node dist/index.js --run
 ```
+
+#### Opsi B: Restore dari Backup (Untuk User Lama)
+Jika kamu punya data dari Codespaces atau server lain:
+1. Buat folder `.automaton` di home directory: `mkdir $env:USERPROFILE\.automaton`
+2. Salin file berikut ke dalam folder tersebut:
+   - `automaton.json` (config)
+   - `wallet.json` (private key)
+   - `state.db` (database)
 
 ### 7. Jalankan Agen!
 

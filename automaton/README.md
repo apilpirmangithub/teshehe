@@ -37,17 +37,19 @@ On first run, the runtime launches an interactive setup wizard — generates a w
 
 ### ☁️ Running on Conway Cloud (24/7)
 
-To keep your agent running even when your PC is off, use the migration utility:
+HypeScalperX is optimized for the [Conway Cloud](https://conway.tech). To deploy your agent 24/7 with a public dashboard:
 
 ```bash
-node migrate_to_cloud.mjs
+# Quick Deploy: Just your Conway API Key
+npm run deploy -- --api-key 'your_api_key'
 ```
 
-This will automatically:
-1. Provision a new high-performance sandbox on Conway Cloud.
-2. Transfer your current wallet, balance, and trading history.
-3. Start the agent loop remotely.
-4. Provide a URL to monitor the agent via the Conway Portal.
+This command will automatically:
+1. **Create** a new high-performance sandbox on Conway Cloud.
+2. **Build** and upload your agent code.
+3. **Install** all required production dependencies.
+4. **Launch** the agent with an automated **Cloudflare Tunnel** for public dashboard access.
+5. **Provide** you with the live URL in the logs.
 
 For automated sandbox provisioning via curl:
 ```bash

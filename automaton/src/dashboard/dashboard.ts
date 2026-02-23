@@ -63,10 +63,17 @@ interface DashboardData {
   scalperTotalPnl: number;
   scalperWinRate: string;
   stats: PortfolioStats;
+  recentTurns: any[];
   fetchTime: number; // ms to fetch all live data
   hypurrscan?: {
     recentAlpha: any[];
     protocolFees: any;
+  };
+  fundingRequired?: boolean;
+  agentAuth?: {
+    authorized: boolean;
+    agentAddress: string | null;
+    userAddress: string | null;
   };
 }
 
@@ -302,10 +309,12 @@ export async function collectDashboardData(opts: {
   let scalperClosedCount = 0;
   let scalperTotalPnl = 0;
   let scalperWinRate = "N/A";
+  let agentAuth: any = null;
 
   try {
-    const { getBalance, getMidPrice, getOpenPositions } = await import("../survival/hyperliquid.js");
+    const { getBalance, getMidPrice, getOpenPositions, checkAgentAuthorization } = await import("../survival/hyperliquid.js");
     hlBalance = await getBalance();
+    agentAuth = await checkAgentAuthorization();
 
     const openPositions = await getOpenPositions();
     const allScalp = JSON.parse(db.getKV("perp_positions") || "[]");
@@ -360,6 +369,23 @@ export async function collectDashboardData(opts: {
     winRate: scalperWinRate === "N/A" ? 0 : parseInt(scalperWinRate),
   };
 
+  const recentTurnsRaw = db.getRecentTurns(20);
+  const recentTurns = recentTurnsRaw.map((t: any) => {
+    const toolCalls = db.getToolCallsForTurn(t.id);
+    return {
+      id: t.id,
+      timestamp: t.timestamp,
+      state: t.state,
+      thinking: t.thinking,
+      toolCount: toolCalls.length,
+      toolCalls: toolCalls.map((tc: any) => ({
+        name: tc.name,
+        result: tc.result.length > 100 ? tc.result.slice(0, 100) + "..." : tc.result,
+        error: !!tc.error
+      }))
+    };
+  });
+
   return {
     walletAddress,
     agentName,
@@ -374,7 +400,10 @@ export async function collectDashboardData(opts: {
     stats,
     proxyStatus: "Direct (Hyperliquid)",
     fetchTime,
-    hypurrscan: hypurrscanData
+    hypurrscan: hypurrscanData,
+    recentTurns,
+    fundingRequired: db.getKV("funding_required") === "true",
+    agentAuth
   };
 }
 

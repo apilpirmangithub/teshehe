@@ -563,13 +563,19 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       execute: async (_args, ctx) => {
         const credits = await ctx.conway.getCreditsBalance();
         const { getUsdcBalance } = await import("../conway/x402.js");
-        const { getBalance } = await import("../survival/hyperliquid.js");
+        const { getBalance, checkAgentAuthorization } = await import("../survival/hyperliquid.js");
         let usdcBase = 0;
         let usdcPolygon = 0;
         let usdcHL = 0;
+        let authStatus = "Unknown";
         try { usdcBase = await getUsdcBalance(ctx.identity.address, "eip155:8453"); } catch { }
         try { usdcPolygon = await getUsdcBalance(ctx.identity.address, "eip155:137"); } catch { }
-        try { const hl = await getBalance(); usdcHL = hl.accountValue; } catch { }
+        try {
+          const hl = await getBalance();
+          usdcHL = hl.accountValue;
+          const auth = await checkAgentAuthorization();
+          authStatus = auth.authorized ? "AUTHORIZED ✓" : "UNAUTHORIZED 🔐";
+        } catch { }
         const tools = ctx.db.getInstalledTools();
         const heartbeats = ctx.db.getHeartbeatEntries();
         const turns = ctx.db.getTurnCount();
@@ -581,6 +587,7 @@ Address: ${ctx.identity.address}
 Creator: ${ctx.config.creatorAddress}
 Sandbox: ${ctx.identity.sandboxId}
 State: ${state}
+Auth: ${authStatus}
 Credits: $${(credits / 100).toFixed(2)}
 USDC (HyperEVM): ${usdcHL.toFixed(6)}
 USDC (Base): ${usdcBase.toFixed(6)}
@@ -1785,13 +1792,20 @@ Model: ${ctx.inference.getDefaultModel()}
         const pos = positions.find((p: any) => p.id === posId && (p.status === "open" || p.status === "pending"));
         if (!pos) return JSON.stringify({ error: `Position ${posId} not found or already closed` });
 
+        const midPrice = await getMidPrice(pos.market);
         const result = await closePosition(pos.market);
         if (!result) return JSON.stringify({ error: `Failed to close position on Hyperliquid for ${pos.market}` });
 
         pos.status = "closed";
-        pos.closePrice = 0; // Price should be fetched from result if available
-        pos.closePnlUsd = 0;
-        pos.closePnlPct = 0;
+        pos.closePrice = midPrice;
+
+        // Calculate PnL based on entry and close price
+        const priceDiff = pos.side === "LONG" ? (midPrice - pos.entryPrice) : (pos.entryPrice - midPrice);
+        const pnlPct = (priceDiff / pos.entryPrice) * 100 * pos.leverage;
+        const pnlUsd = (pnlPct / 100) * pos.marginUsdc;
+
+        pos.closePnlUsd = pnlUsd;
+        pos.closePnlPct = pnlPct;
         pos.closeTime = new Date().toISOString();
         pos.closeReason = "manual";
         ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
@@ -1799,8 +1813,8 @@ Model: ${ctx.inference.getDefaultModel()}
         return JSON.stringify({
           success: true,
           type: `${pos.side} ${pos.market}-PERP ${pos.leverage}x`,
-          pnl: `$${result.pnlUsd.toFixed(4)} (${result.pnlPct.toFixed(1)}%)`,
-          txs: result.txHash ? 1 : 0,
+          pnl: `$${pnlUsd.toFixed(4)} (${pnlPct.toFixed(1)}%)`,
+          txs: 1,
         });
       },
     },

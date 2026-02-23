@@ -45,6 +45,7 @@ Sovereign AI Agent Runtime
 Usage:
   automaton --run          Start the automaton (shows dashboard first)
   automaton --dashboard    Show live trading dashboard (auto-refresh)
+  automaton --auto-tunnel  Start Cloudflare Tunnel to expose port 3000
   automaton --setup        Re-run the interactive setup wizard
   automaton --init         Initialize wallet and config directory
   automaton --provision    Provision Conway API key via SIWE
@@ -99,8 +100,16 @@ Environment:
   }
 
   if (args.includes("--run")) {
+    if (args.includes("--auto-tunnel")) {
+      startTunnel().catch(err => console.error(`[Tunnel] Failed: ${err.message}`));
+    }
     await run();
     return;
+  }
+
+  if (args.includes("--auto-tunnel")) {
+    await startTunnel();
+    process.exit(0);
   }
 
   // Default: show help
@@ -185,6 +194,11 @@ async function run(): Promise<void> {
     config = await runSetupWizard();
   }
 
+  // Ensure API key is in environment for getWallet() zero-config logic
+  if (config.conwayApiKey && !process.env.CONWAY_API_KEY) {
+    process.env.CONWAY_API_KEY = config.conwayApiKey;
+  }
+
   // Load wallet
   const { account } = await getWallet();
   const apiKey = config.conwayApiKey || loadApiKeyFromConfig();
@@ -225,7 +239,7 @@ async function run(): Promise<void> {
       db,
       config,
       walletAddress: account.address,
-      port: 3000,
+      port: 3001,
     });
   } catch (err: any) {
     console.warn(`[${new Date().toISOString()}] Web Dashboard Server failed: ${err.message}`);
@@ -237,6 +251,37 @@ async function run(): Promise<void> {
     await showDashboard({ db, config, walletAddress: account.address });
   } catch (err: any) {
     console.warn(`[${new Date().toISOString()}] Dashboard skipped: ${err.message}`);
+  }
+
+  // ─── Pre-flight Capital Check ───────────────────────────────
+  try {
+    const { getBalance } = await import("./survival/hyperliquid.js");
+    const hl = await getBalance();
+    if (hl.accountValue < 1.0) {
+      console.warn(`\n\x1b[1m\x1b[33m[!]\x1b[0m \x1b[33mCRITICAL: Insufficient USDC balance ($${hl.accountValue.toFixed(2)}).\x1b[0m`);
+      console.warn(`\x1b[33m[!]\x1b[0m \x1b[33mHyperScalperX requires at least $1.00 USDC to trade.\x1b[0m`);
+      console.warn(`\x1b[33m[!]\x1b[0m \x1b[33mPlease deposit USDC via Hyperliquid App:\x1b[0m`);
+      console.warn(`\x1b[1m\x1b[36m    https://app.hyperliquid.xyz/\x1b[0m`);
+      console.warn(`\x1b[33m[!]\x1b[0m \x1b[33mThe agent will enter SLEEP mode until funded.\x1b[0m\n`);
+    }
+
+    // ─── Agent Authorization Check ──────────────────────────────
+    const auth = await (await import("./survival/hyperliquid.js")).checkAgentAuthorization();
+    if (!auth.authorized) {
+      console.log(`\n\x1b[1m\x1b[35m[!] ACTION REQUIRED: AUTHORIZE AGENT\x1b[0m`);
+      console.log(`\x1b[35mAgar HypeScalperX bisa trading, Anda perlu memberikan izin (Authorize) di Hyperliquid.\x1b[0m`);
+      console.log(`\x1b[35mCaranya sangat mudah:\x1b[0m`);
+      console.log(`\x1b[36m  1. Buka \x1b[1mhttps://app.hyperliquid.xyz/\x1b[0m`);
+      console.log(`\x1b[36m  2. Klik tab \x1b[1m'More'\x1b[0m di atas, lalu pilih \x1b[1m'API'\x1b[0m`);
+      console.log(`\x1b[36m  3. Klik tombol \x1b[1m'Authorize an Agent'\x1b[0m`);
+      console.log(`\x1b[36m  4. Masukkan Address Agen ini:\x1b[0m \x1b[1m\x1b[32m${auth.agentAddress}\x1b[0m`);
+      console.log(`\x1b[36m  5. Klik 'Approve' dan tanda tangani di Wallet (MetaMask/Rabby).\x1b[0m`);
+      console.log(`\n\x1b[35mDashboard akan otomatis update begitu status berubah menjadi ACTIVE.\x1b[0m\n`);
+    } else {
+      console.log(`\x1b[32m[✓] Agent Authorization: ACTIVE (Signed by ${auth.userAddress})\x1b[0m`);
+    }
+  } catch (err: any) {
+    console.warn(`[${new Date().toISOString()}] Capital/Auth check failed: ${err.message}`);
   }
 
   // Create Conway client
@@ -398,6 +443,26 @@ async function run(): Promise<void> {
       await sleep(30_000);
     }
   }
+}
+
+async function startTunnel(): Promise<void> {
+  const { exec } = await import("child_process");
+  console.log("[Tunnel] Starting Cloudflare Quick Tunnel...");
+  const proc = exec('cloudflared tunnel --url http://127.0.0.1:3001');
+
+  proc.stderr?.on("data", (data) => {
+    const output = data.toString();
+    const match = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    if (match) {
+      console.log(`\n\x1b[32m[Tunnel] PUBLIC DASHBOARD ACCESS: ${match[0]}\x1b[0m\n`);
+    }
+  });
+
+  return new Promise((resolve) => {
+    proc.on("spawn", () => {
+      setTimeout(resolve, 3000);
+    });
+  });
 }
 
 function sleep(ms: number): Promise<void> {

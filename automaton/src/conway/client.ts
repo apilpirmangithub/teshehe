@@ -40,7 +40,7 @@ export function createConwayClient(
       method,
       headers: {
         "Content-Type": "application/json",
-        Authorization: apiKey,
+        Authorization: apiKey.startsWith("Bearer ") ? apiKey : `Bearer ${apiKey}`,
       },
       body: body ? JSON.stringify(body) : undefined,
     });

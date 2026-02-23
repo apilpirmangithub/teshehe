@@ -159,10 +159,7 @@ async function chatViaOpenAiCompatible(params: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization:
-        params.backend === "openai"
-          ? `Bearer ${params.apiKey}`
-          : params.apiKey,
+      Authorization: params.apiKey.startsWith("Bearer ") ? params.apiKey : `Bearer ${params.apiKey}`,
     },
     body: JSON.stringify(params.body),
   });
@@ -270,13 +267,13 @@ async function chatViaAnthropic(params: {
   const toolCalls: InferenceToolCall[] | undefined =
     toolUseBlocks.length > 0
       ? toolUseBlocks.map((tool: any) => ({
-          id: tool.id,
-          type: "function" as const,
-          function: {
-            name: tool.name,
-            arguments: JSON.stringify(tool.input || {}),
-          },
-        }))
+        id: tool.id,
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          arguments: JSON.stringify(tool.input || {}),
+        },
+      }))
       : undefined;
 
   const textContent = textBlocks

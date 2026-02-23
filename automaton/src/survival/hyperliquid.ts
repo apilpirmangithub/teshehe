@@ -10,8 +10,9 @@ import {
     ExchangeClient,
     HttpTransport,
 } from "@nktkas/hyperliquid";
+import { userRole } from "@nktkas/hyperliquid/api/info";
 import { PrivateKeySigner } from "@nktkas/hyperliquid/signing";
-import { loadWalletAccount, getWalletPrivateKey } from "../identity/wallet.js";
+import { loadWalletAccount, getWalletPrivateKey, getSigningAddress } from "../identity/wallet.js";
 import { analyze, type Candle, type TASignal } from "./technicals.js";
 
 /**
@@ -119,6 +120,7 @@ export function initHyperliquid() {
 
     const privKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     signer = new PrivateKeySigner(privKey as `0x${string}`);
+
     exchangeClient = new ExchangeClient({ wallet: signer, transport });
 
     return { infoClient, exchangeClient };
@@ -135,6 +137,31 @@ export async function getMidPrice(asset: string): Promise<number> {
     const price = allMids[asset];
     if (!price) throw new Error(`Price not found for asset: ${asset}`);
     return parseFloat(price);
+}
+
+/**
+ * Checks if the agent's deterministic address is authorized to trade on behalf of the user.
+ */
+export async function checkAgentAuthorization(): Promise<{ authorized: boolean; agentAddress: string | null; userAddress: string | null }> {
+    const { infoClient } = initHyperliquid();
+    const userAccount = loadWalletAccount();
+    const agentAddress = getSigningAddress();
+
+    if (!userAccount || !agentAddress) return { authorized: false, agentAddress, userAddress: userAccount?.address || null };
+
+    // An agent is authorized if userRole(agentAddress) returns { role: 'agent', data: { user: userAddress } }
+    try {
+        const role = await infoClient.userRole({ user: agentAddress as `0x${string}` });
+        const isAuth = role.role === "agent" && role.data.user.toLowerCase() === userAccount.address.toLowerCase();
+        return {
+            authorized: isAuth,
+            agentAddress,
+            userAddress: userAccount.address
+        };
+    } catch (err) {
+        console.error("[Hyperliquid] Error checking agent authorization:", err);
+        return { authorized: false, agentAddress, userAddress: userAccount.address };
+    }
 }
 
 /**
@@ -194,6 +221,7 @@ export async function getAllTradableAssets(): Promise<{
 
     const assets = meta.universe.map((u, i) => {
         const ctx = assetCtxs[i];
+        if (!ctx) return null;
         const price = parseFloat(ctx.markPx || ctx.prevDayPx || "0");
         const vol24h = parseFloat(ctx.dayNtlVlm || "0");
         const funding = parseFloat(ctx.funding || "0");
@@ -205,7 +233,7 @@ export async function getAllTradableAssets(): Promise<{
             funding,
             price,
         };
-    }).filter(a => a.volume24h >= SCALP_CONFIG.minVolume24h && a.price > 0);
+    }).filter((a): a is NonNullable<typeof a> => a !== null && a.volume24h >= SCALP_CONFIG.minVolume24h && a.price > 0);
 
     // Sort by volume descending
     assets.sort((a, b) => b.volume24h - a.volume24h);
@@ -242,27 +270,32 @@ export async function getBalance(): Promise<HyperliquidBalance> {
     if (!account) throw new Error("Wallet not loaded");
 
     // For unified accounts, we need both clearinghouses
+    console.log(`[Hyperliquid] Fetching balance for address: ${account.address}`);
     const [userState, spotState] = await safeRequest(() => Promise.all([
         infoClient.clearinghouseState({ user: account.address }),
         infoClient.spotClearinghouseState({ user: account.address }),
     ]));
 
-    const perpValue = parseFloat(userState.marginSummary.accountValue || "0");
+    const perpValue = parseFloat(userState.marginSummary?.accountValue || "0");
     const perpWithdrawable = parseFloat(userState.withdrawable || "0");
+    console.log(`[Hyperliquid] Perp Account Value: ${perpValue}, Withdrawable: ${perpWithdrawable}`);
 
     // Spot USDC (unified accounts share this with perps)
     let spotUsdc = 0;
+    console.log(`[Hyperliquid] Spot Balances: ${JSON.stringify(spotState.balances)}`);
     for (const b of spotState.balances) {
         if (b.coin === "USDC") {
             spotUsdc = parseFloat(b.total || "0");
             break;
         }
     }
+    console.log(`[Hyperliquid] Final Spot USDC found: ${spotUsdc}`);
 
     // Unified account: total capital = perp account value + spot USDC
     // withdrawable = perp withdrawable + spot USDC (since unified shares)
     const totalValue = perpValue + spotUsdc;
     const withdrawable = perpWithdrawable + spotUsdc;
+    console.log(`[Hyperliquid] Total Calculated Value: ${totalValue}`);
 
     return {
         withdrawable,
@@ -352,7 +385,7 @@ export async function marketOrder(
             }
         }],
         grouping: "na"
-    });
+    } as const);
 }
 
 /**
@@ -374,6 +407,10 @@ export async function closePosition(asset: string): Promise<any> {
     ]);
 
     const assetIndex = metaData.universe.findIndex((a: any) => a.name === asset);
+    if (assetIndex === -1) {
+        console.error(`[Hyperliquid] Asset ${asset} not found in universe during close.`);
+        return null;
+    }
     const slippagePct = 1.0;
     const limitPrice = isBuy
         ? midPrice * (1 + slippagePct / 100)
@@ -489,7 +526,7 @@ export async function checkPositionTPSL(pos: any, _inference?: any): Promise<any
     let effectiveSL = sl;
     if (pnlPct > trailActivation) {
         // Trail SL to lock in at least 30% of current profit
-        effectiveSL = Math.min(sl, pnlPct * 0.7);
+        effectiveSL = pnlPct * 0.7; // e.g. if profit is 10%, trail SL at 7%
     }
 
     if (pnlPct >= tp) {
@@ -499,8 +536,8 @@ export async function checkPositionTPSL(pos: any, _inference?: any): Promise<any
         return { shouldClose: true, reason: "Stop Loss 🛑", pnlPct, currentPrice, tp, sl: effectiveSL };
     }
 
-    // Trailing stop hit
-    if (pnlPct > trailActivation && pnlPct <= (pnlPct - effectiveSL)) {
+    // Trailing stop: after activation, if profit drops below the trailing threshold, close
+    if (pnlPct > 0 && pnlPct < effectiveSL && effectiveSL > sl * 0.5) {
         return { shouldClose: true, reason: "Trailing Stop 📉", pnlPct, currentPrice, tp, sl: effectiveSL };
     }
 
@@ -510,7 +547,19 @@ export async function checkPositionTPSL(pos: any, _inference?: any): Promise<any
 /**
  * Calculate compounded margin for a new position.
  * Uses compoundRatio of total capital, capped at maxMarginPct.
+ * SAFEGUARD: Ensures balance - margin >= 1.0.
  */
 export function getCompoundedMargin(balance: number): number {
-    return Math.max(1.0, balance * SCALP_CONFIG.maxMarginPct * SCALP_CONFIG.compoundRatio);
+    if (balance <= 1.0) return 0;
+
+    // Allocate margin based on config
+    let margin = balance * SCALP_CONFIG.maxMarginPct * SCALP_CONFIG.compoundRatio;
+
+    // Protect $1.00 reserve: balance - margin must be >= 1.0
+    // So margin must be <= balance - 1.0
+    const maxSafeMargin = Math.max(0, balance - 1.01); // 1.01 to leave a tiny buffer
+
+    margin = Math.min(margin, maxSafeMargin);
+
+    return Math.max(0, margin);
 }

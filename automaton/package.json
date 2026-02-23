@@ -1,7 +1,7 @@
 {
-  "name": "@conway/automaton",
+  "name": "hyperscalper-x",
   "version": "0.1.0",
-  "description": "Conway Automaton - Sovereign AI Agent Runtime",
+  "description": "HyperScalperX — Ultra-aggressive perp scalping AI agent for Hyperliquid/Base.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -40,7 +40,9 @@
     "build": "tsc && copy src\\dashboard\\index.html dist\\dashboard\\index.html && pnpm -r build",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
-    "clean": "rm -rf dist && pnpm -r clean"
+    "clean": "rm -rf dist && pnpm -r clean",
+    "deploy": "node scripts/deploy-cloud.mjs",
+    "logs-cloud": "node scripts/cloud-logs.mjs"
   },
   "dependencies": {
     "@ethersproject/contracts": "^5.8.0",

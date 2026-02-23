@@ -151,7 +151,19 @@ export async function runAgentLoop(
       // Refresh financial state periodically
       financial = await getFinancialState(conway, identity.address, db);
 
-      // Check survival tier
+      // Check USDC balance (Capital Guard)
+      if (financial.usdcBalance < 1.0) {
+        log(config, `[CAPITAL GUARD] Insufficient USDC balance ($${financial.usdcBalance.toFixed(2)}). Minimum $1.00 required to trade.`);
+        db.setAgentState("dead");
+        db.setKV("funding_required", "true");
+        onStateChange?.("dead");
+        running = false;
+        break;
+      } else {
+        db.deleteKV("funding_required");
+      }
+
+      // Check survival tier (Conway Credits)
       const tier = getSurvivalTier(financial.creditsCents);
       if (tier === "dead") {
         log(config, "[DEAD] No credits remaining. Entering dead state.");

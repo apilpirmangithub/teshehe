@@ -13,7 +13,7 @@ export function startDashboardServer(opts: {
     walletAddress: string;
     port?: number;
 }) {
-    const port = opts.port || 3000;
+    const port = opts.port || 3001;
 
     const server = http.createServer(async (req, res) => {
         // Simple router
@@ -45,8 +45,8 @@ export function startDashboardServer(opts: {
         res.end("Not Found");
     });
 
-    server.listen(port, () => {
-        console.log(`[Dashboard] Web UI available at http://localhost:${port}`);
+    server.listen(port, "0.0.0.0", () => {
+        console.log(`[Dashboard] Web UI available at http://0.0.0.0:${port}`);
     });
 
     return server;

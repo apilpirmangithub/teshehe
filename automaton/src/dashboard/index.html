@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HypeScalperX Dashboard</title>
+    <title>HyperScalperX Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -324,28 +324,117 @@
             color: var(--bg);
         }
 
-        @keyframes pulse {
-            0% {
-                opacity: 1;
+        .funding-banner {
+            background: linear-gradient(90deg, #ff4d4d, #f9a825);
+            color: white;
+            text-align: center;
+            padding: 8px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            display: none;
+            border-radius: 0 0 12px 12px;
+            box-shadow: 0 4px 15px rgba(255, 77, 77, 0.3);
+            margin-bottom: 1rem;
+            animation: slideDown 0.5s ease-out;
+        }
+
+        .auth-banner {
+            background: rgba(255, 121, 198, 0.1);
+            border: 1px solid rgba(255, 121, 198, 0.3);
+            color: #ff79c6;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            margin-bottom: 1rem;
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .auth-banner.active {
+            display: flex;
+        }
+
+        .auth-guide {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-top: 1rem;
+            border: 1px dashed var(--accent);
+            display: none;
+        }
+
+        .auth-guide.visible {
+            display: block;
+        }
+
+        .auth-step {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .step-num {
+            background: var(--accent);
+            color: var(--bg);
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            flex-shrink: 0;
+            font-size: 0.7rem;
+        }
+
+        .address-box {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            margin: 8px 0;
+            border: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: var(--success);
+        }
+
+        .copy-btn {
+            background: var(--accent);
+            color: var(--bg);
+            border: none;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-100%);
             }
 
-            50% {
-                opacity: 0.5;
-            }
-
-            100% {
-                opacity: 1;
+            to {
+                transform: translateY(0);
             }
         }
 
-        .live-indicator {
-            width: 8px;
-            height: 8px;
-            background: var(--error);
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 5px;
-            animation: pulse 1s infinite;
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
         }
 
         footer {
@@ -360,10 +449,55 @@
 </head>
 
 <body>
+    <div id="funding-warning" class="funding-banner">
+        ⚠️ FUNDING REQUIRED: DEPOSIT USDC VIA <a href="https://app.hyperliquid.xyz/" target="_blank"
+            style="color: white; text-decoration: underline;">APP.HYPERLIQUID.XYZ</a> TO START TRADING
+    </div>
     <div class="container">
+        <div id="auth-banner" class="auth-banner">
+            <span>🔐 API WALLET UNAUTHORIZED: Agent cannot trade yet.</span>
+            <button class="copy-btn" onclick="document.getElementById('auth-guide').classList.toggle('visible')">Show
+                Guide</button>
+        </div>
+
+        <div id="auth-guide" class="auth-guide">
+            <h3 style="color:var(--accent); margin-bottom: 1rem; font-size: 1rem;">Delegate Trading Permissions
+                (Authorize API Wallet)</h3>
+            <div class="auth-step">
+                <div class="step-num">1</div>
+                <div>Open <a href="https://app.hyperliquid.xyz/" target="_blank"
+                        style="color:var(--accent)">app.hyperliquid.xyz</a></div>
+            </div>
+            <div class="auth-step">
+                <div class="step-num">2</div>
+                <div>Click <b>'More'</b> (top right) and select <b>'API'</b></div>
+            </div>
+            <div class="auth-step">
+                <div class="step-num">3</div>
+                <div>Click the <b>'Authorize an API Wallet'</b> button</div>
+            </div>
+            <div class="auth-step">
+                <div class="step-num">4</div>
+                <div>Enter a <b>Name</b> (e.g., "HyperScalperX") and this <b>Agent Address</b>:
+                    <div class="address-box">
+                        <span id="agent-addr-display">0x...</span>
+                        <button class="copy-btn" onclick="copyAgentAddr()">Copy</button>
+                    </div>
+                </div>
+            </div>
+            <div class="auth-step">
+                <div class="step-num">5</div>
+                <div>Click <b>'Authorize an API Wallet'</b> and sign the transaction in your Wallet (MetaMask/Rabby).
+                </div>
+            </div>
+            <div
+                style="font-size: 0.75rem; color: var(--text-dim); margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;">
+                *Once authorized, the status below will automatically update to <b>ACTIVE</b>.
+            </div>
+        </div>
         <header>
             <div style="display: flex; align-items: center; gap: 1rem;">
-                <div class="logo">HYPESCALPER X</div>
+                <div class="logo">HyperScalperX</div>
                 <div id="agent-status" class="status-badge">
                     <div class="status-dot"></div>
                     <span id="status-text">AGENT: INITIALIZING</span>
@@ -452,30 +586,65 @@
             }
         }
 
+        function copyAgentAddr() {
+            const addr = window.currentAgentAddr;
+            if (addr) {
+                navigator.clipboard.writeText(addr).then(() => {
+                    alert('Agent address copied to clipboard!');
+                });
+            }
+        }
+
         function updateUI(data) {
+            const agentState = data.agentState || 'unknown';
+
+            // Funding Banner
+            const banner = document.getElementById('funding-warning');
+            if (data.fundingRequired || data.hlAccountValue < 1.0) {
+                banner.style.display = 'block';
+                if (data.walletAddress) {
+                    banner.innerHTML = `⚠️ FUNDING REQUIRED: DEPOSIT USDC VIA <a href="https://app.hyperliquid.xyz/" target="_blank" style="color: white; text-decoration: underline;">APP.HYPERLIQUID.XYZ</a> TO START TRADING`;
+                }
+            } else {
+                banner.style.display = 'none';
+            }
+
             // Stats
-            document.getElementById('acc-value').textContent = `$${data.hlAccountValue.toFixed(2)}`;
+            document.getElementById('acc-value').textContent = `$${data.hlAccountValue.toFixed(4)}`;
             document.getElementById('total-pnl').textContent = `$${data.scalperTotalPnl.toFixed(2)} / ${data.scalperWinRate}`;
             document.getElementById('open-count').textContent = data.scalperOpenPositions.length;
             document.getElementById('credits').textContent = `$${(data.conwayCredits / 100).toFixed(2)}`;
 
-            // Update Status Badge
-            const statusBadge = document.getElementById('agent-status');
-            const statusText = document.getElementById('status-text');
-            const agentState = data.agentState || 'unknown';
+            // Agent Authorization
+            const authBanner = document.getElementById('auth-banner');
+            const agentStatusText = document.getElementById('status-text');
+            const agentAddrDisplay = document.getElementById('agent-addr-display');
 
-            if (agentState === 'running' || agentState === 'trading' || agentState === 'sleeping') {
-                statusBadge.classList.add('active');
-                statusText.innerText = `AGENT: ${agentState.toUpperCase()}`;
-            } else {
-                statusBadge.classList.remove('active');
-                statusText.innerText = `AGENT: ${agentState.toUpperCase()}`;
+            if (data.agentAuth) {
+                agentAddrDisplay.innerText = data.agentAuth.agentAddress;
+                window.currentAgentAddr = data.agentAuth.agentAddress;
+
+                if (!data.agentAuth.authorized) {
+                    authBanner.classList.add('active');
+                    agentStatusText.innerText = 'AGENT: UNAUTHORIZED 🔐';
+                    agentStatusText.style.color = '#ff79c6';
+                } else {
+                    authBanner.classList.remove('active');
+                    document.getElementById('auth-guide').classList.remove('visible');
+                    agentStatusText.innerText = `AGENT: ${agentState.toUpperCase()} ✓`;
+                    agentStatusText.style.color = 'var(--success)';
+                }
             }
 
             const stateEl = document.getElementById('agent-state');
             stateEl.textContent = data.agentState.charAt(0).toUpperCase() + data.agentState.slice(1);
             const dot = document.getElementById('status-dot');
             dot.className = 'dot ' + data.agentState;
+
+            // Last Update info in footer
+            const footerEl = document.querySelector('footer');
+            const timeStr = new Date().toLocaleTimeString();
+            footerEl.innerHTML = `<div class="live-indicator"></div> LIVE DATA • LAST UPDATED: ${timeStr} • REFRESHING EVERY 10S`;
 
             // Table
             const tbody = document.querySelector('#positions-table tbody');
@@ -524,6 +693,58 @@
                     const fees = data.hypurrscan.protocolFees;
                     document.getElementById('protocol-fees').innerHTML = `Protocol Fees: $${(fees.total_fees / 1e12).toFixed(2)}M`;
                 }
+            }
+
+            // Activity Logs
+            const logContainer = document.getElementById('log-container');
+            if (data.recentTurns && data.recentTurns.length > 0) {
+                logContainer.innerHTML = '';
+                // data.recentTurns are already sorted DESC from backend but collected ASC originally, 
+                // but let's ensure we show newest at top if desirable, or bottom. 
+                // Usually newest at top is better for live dashboards.
+                const turns = [...data.recentTurns].reverse();
+
+                turns.forEach(t => {
+                    const turnDiv = document.createElement('div');
+                    turnDiv.className = 'log-entry';
+                    turnDiv.style.marginBottom = '12px';
+                    turnDiv.style.padding = '8px';
+                    turnDiv.style.background = 'rgba(255,255,255,0.02)';
+                    turnDiv.style.borderRadius = '6px';
+                    turnDiv.style.borderLeft = '2px solid var(--accent)';
+
+                    const time = new Date(t.timestamp).toLocaleTimeString();
+                    const stateBadge = `<span style="font-size:10px; padding:2px 6px; border-radius:10px; background:rgba(0,229,255,0.1); color:var(--accent); margin-right:8px;">${t.state.toUpperCase()}</span>`;
+
+                    let html = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                            <div>${stateBadge}<span class="log-time" style="font-size:10px;">[${time}]</span> <span style="font-weight:600; color:white;">Turn ${t.id.slice(0, 8)}</span></div>
+                            <span style="font-size:10px; color:var(--text-dim);">${t.toolCount} tools</span>
+                        </div>
+                        <div style="color:var(--text); line-height:1.4; margin-bottom:8px; font-size:0.8rem;">${t.thinking}</div>
+                    `;
+
+                    if (t.toolCalls && t.toolCalls.length > 0) {
+                        html += `<div style="margin-top:5px; padding-left:10px; border-left:1px solid rgba(255,255,255,0.1);">`;
+                        t.toolCalls.forEach(tc => {
+                            const icon = tc.error ? '❌' : '🛠️';
+                            const nameColor = tc.error ? 'var(--error)' : 'var(--success)';
+                            html += `
+                                <div style="font-size:11px; margin-bottom:4px;">
+                                    <span style="margin-right:5px;">${icon}</span>
+                                    <span style="color:${nameColor}; font-weight:500;">${tc.name}</span>
+                                    <div style="color:var(--text-dim); font-size:10px; margin-left:20px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:90%;">${tc.result}</div>
+                                </div>
+                            `;
+                        });
+                        html += `</div>`;
+                    }
+
+                    turnDiv.innerHTML = html;
+                    logContainer.appendChild(turnDiv);
+                });
+            } else if (logContainer.innerHTML === '' || logContainer.innerText.includes('Connecting')) {
+                logContainer.innerHTML = '<div class="log-entry"><span class="log-time">System</span> Dashboard connected. Waiting for agent activity logs...</div>';
             }
 
             // Wallet Link
