@@ -1,5 +1,5 @@
 {
-  "name": "hyperscalper-x",
+  "name": "@conway/automaton",
   "version": "0.1.0",
   "description": "HyperScalperX — Ultra-aggressive perp scalping AI agent for Hyperliquid/Base.",
   "type": "module",
