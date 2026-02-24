@@ -106,6 +106,10 @@ let infoClient: InfoClient | null = null;
 let exchangeClient: ExchangeClient | null = null;
 let signer: PrivateKeySigner | null = null;
 
+// Authorization Caching to prevent dashboard flicker on 429s
+let cachedAuth: { authorized: boolean; agentAddress: string | null; userAddress: string | null; timestamp: number } | null = null;
+const AUTH_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+
 export function initHyperliquid() {
     if (infoClient && exchangeClient) return { infoClient, exchangeClient };
 
@@ -133,7 +137,7 @@ export function initHyperliquid() {
  */
 export async function getMidPrice(asset: string): Promise<number> {
     const { infoClient } = initHyperliquid();
-    const allMids = await infoClient.allMids();
+    const allMids = await safeRequest(() => infoClient!.allMids());
     const price = allMids[asset];
     if (!price) throw new Error(`Price not found for asset: ${asset}`);
     return parseFloat(price);
@@ -153,12 +157,31 @@ export async function checkAgentAuthorization(): Promise<{ authorized: boolean; 
     try {
         const role = await safeRequest(() => infoClient!.userRole({ user: agentAddress as `0x${string}` }));
         const isAuth = role.role === "agent" && role.data.user.toLowerCase() === userAccount.address.toLowerCase();
+
+        // Update cache
+        cachedAuth = {
+            authorized: isAuth,
+            agentAddress,
+            userAddress: userAccount.address,
+            timestamp: Date.now()
+        };
+
         return {
             authorized: isAuth,
             agentAddress,
             userAddress: userAccount.address
         };
     } catch (err) {
+        // If we hit a rate limit or error, but we have a cached 'true', trust it for stability
+        if (cachedAuth && cachedAuth.authorized && (Date.now() - cachedAuth.timestamp < AUTH_CACHE_TTL)) {
+            console.warn("[Hyperliquid] Using cached TRUE authorization status due to request failure.");
+            return {
+                authorized: true,
+                agentAddress: cachedAuth.agentAddress,
+                userAddress: cachedAuth.userAddress
+            };
+        }
+
         console.error("[Hyperliquid] Error checking agent authorization:", err);
         return { authorized: false, agentAddress, userAddress: userAccount.address };
     }
@@ -312,7 +335,7 @@ export async function getOpenPositions(): Promise<HyperliquidPosition[]> {
     const account = loadWalletAccount();
     if (!account) throw new Error("Wallet not loaded");
 
-    const userState = await infoClient.clearinghouseState({ user: account.address });
+    const userState = await safeRequest(() => infoClient!.clearinghouseState({ user: account.address }));
 
     return userState.assetPositions.map((pos) => {
         const size = parseFloat(pos.position.szi);
