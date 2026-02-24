@@ -53,15 +53,15 @@ async function safeRequest<T>(fn: () => Promise<T>, retries = 3, delay = 1000): 
 const IS_TESTNET = false;
 
 export const SCALP_CONFIG = {
-    maxOpenPositions: 2,
-    maxMarginPct: 0.50,      // Max 50% of capital per position
-    minConfidence: 50,       // Only enter when TA score ≥ 50
-    compoundRatio: 0.80,     // Reinvest 80% of profits
-    atrTpMultiplier: 1.5,    // TP at 1.5× ATR
-    atrSlMultiplier: 0.8,    // SL at 0.8× ATR
-    trailActivation: 1.0,    // Activate trailing SL after 1× ATR profit
-    minVolume24h: 300_000,   // Min $300K daily volume to trade
-    defaultLeverage: 10,
+    maxOpenPositions: 4,      // Boss Mode: 4 concurrent trades
+    maxMarginPct: 0.35,       // Lowered to 35% to allow for more slots safely
+    minConfidence: 45,        // Slightly more aggressive entry
+    compoundRatio: 0.90,      // Aggressive reinvestment
+    atrTpMultiplier: 1.5,
+    atrSlMultiplier: 0.8,
+    trailActivation: 1.0,
+    minVolume24h: 300_000,
+    defaultLeverage: 15,      // Higher leverage for faster ROI
 };
 
 // ─── Types ──────────────────────────────────────────────────────
