@@ -53,15 +53,15 @@ async function safeRequest<T>(fn: () => Promise<T>, retries = 3, delay = 1000): 
 const IS_TESTNET = false;
 
 export const SCALP_CONFIG = {
-    maxOpenPositions: 4,      // Boss Mode: 4 concurrent trades
-    maxMarginPct: 0.35,       // Lowered to 35% to allow for more slots safely
-    minConfidence: 45,        // Slightly more aggressive entry
+    maxOpenPositions: 6,      // BERSERKER: 6 concurrent trades
+    maxMarginPct: 0.15,       // 15% per slot for survival (self-aware scaling)
+    minConfidence: 35,        // Hyper-aggressive entry
     compoundRatio: 0.90,      // Aggressive reinvestment
     atrTpMultiplier: 1.5,
     atrSlMultiplier: 0.8,
     trailActivation: 1.0,
-    minVolume24h: 300_000,
-    defaultLeverage: 15,      // Higher leverage for faster ROI
+    minVolume24h: 50_000,     // Target high-volatility small caps
+    defaultLeverage: 20,      // High leverage (20x)
 };
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -485,7 +485,7 @@ export async function scanBestOpportunity(_inference?: any): Promise<{
         const batch = topAssets.slice(i, i + batchSize);
         const batchResults = await Promise.all(batch.map(async (a) => {
             try {
-                const candles = await getCandles(a.name, "15m", 100);
+                const candles = await getCandles(a.name, "5m", 100);
                 processedCount++;
                 if (candles.length < 30) {
                     console.log(`[Hyperliquid] ${a.name} skipped: Not enough candle data (${candles.length}/30)`);
