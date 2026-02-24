@@ -9,7 +9,7 @@ async function main() {
     }
 
     const res = await fetch(`${API_URL}/sandboxes`, {
-        headers: { 'Authorization': API_KEY }
+        headers: { 'Authorization': API_KEY.startsWith('Bearer ') ? API_KEY : `Bearer ${API_KEY}` }
     });
     const data = await res.json();
     const sandbox = data.sandboxes?.find(s => s.name === 'HyperScalperX-Cloud');
@@ -21,7 +21,7 @@ async function main() {
 
     // Get Native Port URL
     const portRes = await fetch(`${API_URL}/sandboxes/${sandbox.id}/ports`, {
-        headers: { 'Authorization': API_KEY }
+        headers: { 'Authorization': API_KEY.startsWith('Bearer ') ? API_KEY : `Bearer ${API_KEY}` }
     });
     const portData = await portRes.json();
     const dashPort = portData.find?.(p => p.port === 3000) || portData[0];
@@ -37,7 +37,7 @@ async function main() {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': API_KEY
+            'Authorization': API_KEY.startsWith('Bearer ') ? API_KEY : `Bearer ${API_KEY}`
         },
         body: JSON.stringify({
             command: 'tail -n 50 /root/.automaton/logs/agent.log 2>/dev/null || echo \"[System] Waiting for logs to initialize...\"',

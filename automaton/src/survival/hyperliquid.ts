@@ -121,7 +121,7 @@ export function initHyperliquid() {
     const privKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
     signer = new PrivateKeySigner(privKey as `0x${string}`);
 
-    exchangeClient = new ExchangeClient({ wallet: signer, transport });
+    exchangeClient = new ExchangeClient({ wallet: signer, transport, user: account.address as `0x${string}` });
 
     return { infoClient, exchangeClient };
 }
@@ -151,7 +151,7 @@ export async function checkAgentAuthorization(): Promise<{ authorized: boolean; 
 
     // An agent is authorized if userRole(agentAddress) returns { role: 'agent', data: { user: userAddress } }
     try {
-        const role = await infoClient.userRole({ user: agentAddress as `0x${string}` });
+        const role = await safeRequest(() => infoClient!.userRole({ user: agentAddress as `0x${string}` }));
         const isAuth = role.role === "agent" && role.data.user.toLowerCase() === userAccount.address.toLowerCase();
         return {
             authorized: isAuth,
