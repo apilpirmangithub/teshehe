@@ -53,7 +53,7 @@ export async function safeRequest<T>(fn: () => Promise<T>, retries = 3, delay = 
 const IS_TESTNET = false;
 
 export const SCALP_CONFIG = {
-    maxOpenPositions: 6,      // BERSERKER: 6 concurrent trades
+    maxOpenPositions: 2,      // Updated to 2 at user request
     maxMarginPct: 0.15,       // 15% per slot for survival (self-aware scaling)
     minConfidence: 35,        // Hyper-aggressive entry
     compoundRatio: 0.90,      // Aggressive reinvestment
