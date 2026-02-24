@@ -144,7 +144,7 @@
 
         .main-content {
             display: grid;
-            grid-template-columns: 2fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 1rem;
             flex: 1;
             overflow: hidden;
@@ -543,12 +543,31 @@
                                 <th>SIDE</th>
                                 <th>ENTRY</th>
                                 <th>LIVE</th>
-                                <th>P&L</th>
+                                <th>P&amp;L</th>
                                 <th>LEVERAGE</th>
                             </tr>
                         </thead>
                         <tbody>
                             <!-- Positions will be injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            <section>
+                <h2>RECENT TRADES (CLOSED)</h2>
+                <div class="table-wrapper">
+                    <table id="trades-table">
+                        <thead>
+                            <tr>
+                                <th>TIME</th>
+                                <th>ASSET</th>
+                                <th>SIDE</th>
+                                <th>P&amp;L</th>
+                                <th>REASON</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Trades will be injected here -->
                         </tbody>
                     </table>
                 </div>
@@ -644,9 +663,7 @@
             // Last Update info in footer
             const footerEl = document.querySelector('footer');
             const timeStr = new Date().toLocaleTimeString();
-            footerEl.innerHTML = `<div class="live-indicator"></div> LIVE DATA • LAST UPDATED: ${timeStr} • REFRESHING EVERY 10S`;
-
-            // Table
+            // Positions Table
             const tbody = document.querySelector('#positions-table tbody');
             tbody.innerHTML = '';
 
@@ -668,6 +685,30 @@
                         <td>${p.leverage}x</td>
                     `;
                     tbody.appendChild(row);
+                });
+            }
+
+            // Trades Table
+            const tradesTbody = document.querySelector('#trades-table tbody');
+            tradesTbody.innerHTML = '';
+
+            if (!data.recentTrades || data.recentTrades.length === 0) {
+                tradesTbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:grey;padding:2rem;">No trade history yet.</td></tr>';
+            } else {
+                data.recentTrades.forEach(t => {
+                    const row = document.createElement('tr');
+                    const pnlClass = (t.pnlUsdc || 0) >= 0 ? 'pnl-plus' : 'pnl-minus';
+                    const sideClass = t.side === 'LONG' ? 'side-long' : 'side-short';
+                    const time = new Date(t.closeTime || t.openTime).toLocaleTimeString();
+
+                    row.innerHTML = `
+                        <td style="font-size:10px; color:var(--text-dim);">${time}</td>
+                        <td><strong>${t.market}</strong></td>
+                        <td><span class="side-badge ${sideClass}">${t.side}</span></td>
+                        <td class="${pnlClass}">${(t.pnlUsdc || 0) >= 0 ? '+' : ''}$${(t.pnlUsdc || 0).toFixed(2)} (${(t.pnlPct || 0).toFixed(1)}%)</td>
+                        <td style="font-size:11px; color:var(--text-dim);">${t.closeReason || 'Open'}</td>
+                    `;
+                    tradesTbody.appendChild(row);
                 });
             }
 

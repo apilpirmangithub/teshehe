@@ -62,6 +62,7 @@ interface DashboardData {
   scalperClosedCount: number;
   scalperTotalPnl: number;
   scalperWinRate: string;
+  recentTrades: any[];
   stats: PortfolioStats;
   recentTurns: any[];
   fetchTime: number; // ms to fetch all live data
@@ -306,67 +307,57 @@ export async function collectDashboardData(opts: {
   // ── Hyperliquid positions ──────────────────────────────────
   let hlBalance: any = { accountValue: 0, withdrawable: 0 };
   let scalperOpenPositions: ScalperDashPosition[] = [];
-  let scalperClosedCount = 0;
-  let scalperTotalPnl = 0;
-  let scalperWinRate = "N/A";
   let agentAuth: any = null;
 
+  const tradeStats = db.getTradeStats();
+  const openTrades = db.getOpenTrades();
+  const recentTrades = db.getTrades(10);
+
+  const scalperClosedCount = tradeStats.totalTrades;
+  const scalperTotalPnl = tradeStats.totalPnlUsdc;
+  const scalperWinRate = `${tradeStats.winrate.toFixed(1)}%`;
+
   try {
-    const { getBalance, getMidPrice, getOpenPositions, checkAgentAuthorization } = await import("../survival/hyperliquid.js");
+    const { getBalance, getMidPrice, checkAgentAuthorization } = await import("../survival/hyperliquid.js");
     hlBalance = await getBalance();
     agentAuth = await checkAgentAuthorization();
 
-    const openPositions = await getOpenPositions();
-    const allScalp = JSON.parse(db.getKV("perp_positions") || "[]");
-    const closedScalp = allScalp.filter((p: any) => p.status !== "open");
-    scalperClosedCount = closedScalp.length;
+    for (const trade of openTrades) {
+      const midPrice = await getMidPrice(trade.market);
 
-    for (const sp of openPositions) {
-      const midPrice = await getMidPrice(sp.asset);
-
-      scalperTotalPnl += sp.unrealizedPnl;
       scalperOpenPositions.push({
-        id: sp.asset, // Use asset name as ID if no UUID
-        tokenSymbol: sp.asset,
-        tokenName: sp.asset,
-        side: sp.side,
-        entryPrice: sp.entryPrice,
-        entryAmountUsdc: sp.marginUsed,
+        id: trade.id,
+        tokenSymbol: trade.market,
+        tokenName: trade.market,
+        side: trade.side,
+        entryPrice: trade.entryPrice,
+        entryAmountUsdc: trade.marginUsdc,
         livePrice: midPrice,
-        livePnlUsd: sp.unrealizedPnl,
-        livePnlPct: (sp.unrealizedPnl / sp.marginUsed) * 100,
-        targetProfitPct: 0, // Not explicitly stored in SDK pos
-        stopLossPct: 0,
-        heldMinutes: 0, // Needs start time tracking if desired
+        livePnlUsd: ((midPrice - trade.entryPrice) / trade.entryPrice) * trade.marginUsdc * trade.leverage * (trade.side === "LONG" ? 1 : -1),
+        livePnlPct: ((midPrice - trade.entryPrice) / trade.entryPrice) * trade.leverage * (trade.side === "LONG" ? 100 : -100),
+        targetProfitPct: trade.dynamicTP,
+        stopLossPct: trade.dynamicSL,
+        heldMinutes: Math.floor((Date.now() - new Date(trade.openTime).getTime()) / 60000),
         status: "open",
-        leverage: sp.leverage,
+        leverage: trade.leverage,
       });
     }
-
-    for (const cp of closedScalp) {
-      scalperTotalPnl += (cp.closePnlUsd || 0);
-    }
-
-    if (closedScalp.length > 0) {
-      const wins = closedScalp.filter((p: any) => (p.closePnlUsd || 0) > 0).length;
-      scalperWinRate = `${((wins / closedScalp.length) * 100).toFixed(0)}%`;
-    }
   } catch (err) {
-    console.warn(`[DASHBOARD] Error collecting Hyperliquid data: ${err}`);
+    console.warn(`[DASHBOARD] Error collecting Hyperliquid live data: ${err}`);
   }
 
   const fetchTime = Date.now() - startTime;
 
   // ── Portfolio Stats ──
   const stats: PortfolioStats = {
-    winCount: scalperOpenPositions.filter(p => p.livePnlUsd > 0).length,
-    lossCount: scalperOpenPositions.filter(p => p.livePnlUsd < 0).length,
-    totalTrades: scalperClosedCount,
-    avgPnlPct: 0,
+    winCount: 0, // Not explicitly needed with tradeStats
+    lossCount: 0,
+    totalTrades: tradeStats.totalTrades,
+    avgPnlPct: tradeStats.totalPnlPct / (tradeStats.totalTrades || 1),
     bestTrade: 0,
     worstTrade: 0,
-    totalPnl: scalperTotalPnl,
-    winRate: scalperWinRate === "N/A" ? 0 : parseInt(scalperWinRate),
+    totalPnl: tradeStats.totalPnlUsdc,
+    winRate: tradeStats.winrate,
   };
 
   const recentTurnsRaw = db.getRecentTurns(20);
@@ -397,6 +388,7 @@ export async function collectDashboardData(opts: {
     scalperClosedCount,
     scalperTotalPnl,
     scalperWinRate,
+    recentTrades,
     stats,
     proxyStatus: "Direct (Hyperliquid)",
     fetchTime,
