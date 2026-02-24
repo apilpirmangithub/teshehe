@@ -32,7 +32,11 @@ async function main() {
         console.log(`\x1b[32mDashboard: ${dashPort.public_url}\x1b[0m`);
     }
 
-    console.log(`\nFetching logs...`);
+    const tailCount = process.argv.find(a => a.startsWith('--tail='))?.split('=')[1] || '500';
+    const customCmd = process.argv.find(a => a.startsWith('--cmd='))?.split('=')[1];
+    const command = customCmd || `tail -n ${tailCount} /root/.automaton/logs/agent.log 2>/dev/null || echo "[System] Waiting for logs to initialize..."`;
+
+    console.log(`\nExecuting in sandbox: ${command}`);
     const execRes = await fetch(`${API_URL}/sandboxes/${sandbox.id}/exec`, {
         method: 'POST',
         headers: {
@@ -40,8 +44,8 @@ async function main() {
             'Authorization': API_KEY.startsWith('Bearer ') ? API_KEY : `Bearer ${API_KEY}`
         },
         body: JSON.stringify({
-            command: 'tail -n 50 /root/.automaton/logs/agent.log 2>/dev/null || echo \"[System] Waiting for logs to initialize...\"',
-            timeout: 10000
+            command: command,
+            timeout: 20000
         })
     });
 

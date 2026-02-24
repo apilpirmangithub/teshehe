@@ -248,10 +248,19 @@ let dashboardCache: {
   credits?: number;
   hypurrAlpha?: any[];
   hypurrFees?: any;
+  hlBalance?: any;
+  agentAuth?: any;
+  allMids?: any;
   timestamp: number;
+  balanceTimestamp: number;
+  authTimestamp: number;
+  midsTimestamp: number;
 } | null = null;
 
-const DASH_CACHE_TTL = 15000; // 15 seconds
+const DASH_CACHE_TTL = 15000; // 15 seconds (generic)
+const BALANCE_TTL = 30000;    // 30 seconds
+const AUTH_TTL = 300000;      // 5 minutes
+const MIDS_TTL = 15000;       // 15 seconds
 
 /**
  * Gather ALL data for the dashboard.
@@ -269,7 +278,16 @@ export async function collectDashboardData(opts: {
   const agentState = db.getAgentState();
   const turnCount = db.getTurnCount();
 
-  const useCache = dashboardCache && (Date.now() - dashboardCache.timestamp < DASH_CACHE_TTL);
+  const now = Date.now();
+  const useCache = dashboardCache && (now - dashboardCache.timestamp < DASH_CACHE_TTL);
+  const useBalanceCache = dashboardCache && (now - dashboardCache.balanceTimestamp < BALANCE_TTL);
+  const useAuthCache = dashboardCache && (now - dashboardCache.authTimestamp < AUTH_TTL);
+  const useMidsCache = dashboardCache && (now - dashboardCache.midsTimestamp < MIDS_TTL);
+
+  // Initialize cache if null
+  if (!dashboardCache) {
+    dashboardCache = { timestamp: 0, balanceTimestamp: 0, authTimestamp: 0, midsTimestamp: 0 };
+  }
 
   // ── Parallel fetch: credits ──
   let conwayCredits = dashboardCache?.credits || 0;
@@ -282,6 +300,8 @@ export async function collectDashboardData(opts: {
         sandboxId: config.sandboxId,
       });
       conwayCredits = await conway.getCreditsBalance();
+      dashboardCache.credits = conwayCredits;
+      dashboardCache.timestamp = now;
     } catch { }
   }
 
@@ -307,6 +327,7 @@ export async function collectDashboardData(opts: {
             time: a.time,
             dex: a.action.registerAsset.dex || "HL"
           }));
+        dashboardCache.hypurrAlpha = hypurrscanData.recentAlpha;
       }
 
       const feesRes = await fetch("https://api.hypurrscan.io/feesRecent");
@@ -314,6 +335,7 @@ export async function collectDashboardData(opts: {
         const fees = await feesRes.json();
         if (fees.length > 0) {
           hypurrscanData.protocolFees = fees[fees.length - 1];
+          dashboardCache.hypurrFees = hypurrscanData.protocolFees;
         }
       }
     } catch (err) {
@@ -321,24 +343,14 @@ export async function collectDashboardData(opts: {
     }
   }
 
-  // Update global cache if we fetched new data
-  if (!useCache) {
-    dashboardCache = {
-      credits: conwayCredits,
-      hypurrAlpha: hypurrscanData.recentAlpha,
-      hypurrFees: hypurrscanData.protocolFees,
-      timestamp: Date.now()
-    };
-  }
-
   // ── Hyperliquid positions ──────────────────────────────────
-  let hlBalance: any = { accountValue: 0, withdrawable: 0 };
+  let hlBalance: any = dashboardCache.hlBalance || { accountValue: 0, withdrawable: 0 };
   let scalperOpenPositions: ScalperDashPosition[] = [];
-  let agentAuth: any = null;
+  let agentAuth: any = dashboardCache.agentAuth || null;
 
   const tradeStats = db.getTradeStats();
   const openTrades = db.getOpenTrades();
-  const recentTrades = db.getTrades(10);
+  const recentTrades = db.getTrades(10); // Persistent all-time history
 
   const scalperClosedCount = tradeStats.totalTrades;
   const scalperTotalPnl = tradeStats.totalPnlUsdc;
@@ -346,12 +358,29 @@ export async function collectDashboardData(opts: {
 
   try {
     const { getBalance, getMidPrice, checkAgentAuthorization, initHyperliquid, safeRequest } = await import("../survival/hyperliquid.js");
-    hlBalance = await getBalance();
-    agentAuth = await checkAgentAuthorization();
 
-    // Fetch all prices once to avoid redundant network calls in the loop below
-    const { infoClient } = initHyperliquid();
-    const allMids = await safeRequest(() => infoClient!.allMids());
+    // Cached Balance
+    if (!useBalanceCache) {
+      hlBalance = await getBalance();
+      dashboardCache.hlBalance = hlBalance;
+      dashboardCache.balanceTimestamp = now;
+    }
+
+    // Cached Auth
+    if (!useAuthCache) {
+      agentAuth = await checkAgentAuthorization();
+      dashboardCache.agentAuth = agentAuth;
+      dashboardCache.authTimestamp = now;
+    }
+
+    // Cached AllMids
+    let allMids = dashboardCache.allMids;
+    if (!useMidsCache) {
+      const { infoClient } = initHyperliquid();
+      allMids = await safeRequest(() => infoClient!.allMids());
+      dashboardCache.allMids = allMids;
+      dashboardCache.midsTimestamp = now;
+    }
 
     for (const trade of openTrades) {
       const midPriceStr = allMids[trade.market];
