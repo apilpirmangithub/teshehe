@@ -1761,18 +1761,19 @@ Model: ${ctx.inference.getDefaultModel()}
       parameters: { type: "object", properties: {} },
       execute: async (_args, ctx) => {
         try {
-          const positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]");
-          const open = positions.filter((p: any) => p.status === "open");
+          const open = ctx.db.getOpenTrades();
           if (open.length === 0) return "No open Hyperliquid positions.";
           return JSON.stringify(open.map((p: any) => ({
+            id: p.id,
             market: p.market,
             side: p.side,
             leverage: p.leverage,
             entry: p.entryPrice,
             margin: p.marginUsdc,
-            tp: p.tpPrice,
-            sl: p.slPrice,
-            open: p.openTime
+            tp: `${p.dynamicTP?.toFixed(2)}%`,
+            sl: `${p.dynamicSL?.toFixed(2)}%`,
+            open: p.openTime,
+            confidence: p.confidence,
           })), null, 2);
         } catch {
           return "Error loading positions.";
@@ -1798,28 +1799,29 @@ Model: ${ctx.inference.getDefaultModel()}
         if (!account) return JSON.stringify({ error: "Wallet not loaded" });
 
         const posId = args.position_id as string;
-        let positions: any[] = [];
-        try { positions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch { }
-        const pos = positions.find((p: any) => p.id === posId && (p.status === "open" || p.status === "pending"));
+        const openTrades = ctx.db.getOpenTrades();
+        const pos = openTrades.find((p: any) => p.id === posId);
         if (!pos) return JSON.stringify({ error: `Position ${posId} not found or already closed` });
 
         const midPrice = await getMidPrice(pos.market);
         const result = await closePosition(pos.market);
         if (!result) return JSON.stringify({ error: `Failed to close position on Hyperliquid for ${pos.market}` });
 
-        pos.status = "closed";
-        pos.closePrice = midPrice;
-
         // Calculate PnL based on entry and close price
         const priceDiff = pos.side === "LONG" ? (midPrice - pos.entryPrice) : (pos.entryPrice - midPrice);
         const pnlPct = (priceDiff / pos.entryPrice) * 100 * pos.leverage;
-        const pnlUsd = (pnlPct / 100) * pos.marginUsdc;
+        const pnlUsd = (pnlPct / 100) * pos.marginUsdc * pos.leverage;
 
-        pos.closePnlUsd = pnlUsd;
-        pos.closePnlPct = pnlPct;
-        pos.closeTime = new Date().toISOString();
-        pos.closeReason = "manual";
-        ctx.db.setKV?.("perp_positions", JSON.stringify(positions));
+        // Update the trades table (source of truth)
+        ctx.db.updateTrade({
+          id: pos.id,
+          status: "closed",
+          closePrice: midPrice,
+          pnlPct,
+          pnlUsdc: pnlUsd,
+          closeTime: new Date().toISOString(),
+          closeReason: "manual",
+        });
 
         return JSON.stringify({
           success: true,
