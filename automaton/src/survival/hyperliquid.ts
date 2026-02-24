@@ -57,11 +57,12 @@ export const SCALP_CONFIG = {
     maxMarginPct: 0.15,       // 15% per slot for survival (self-aware scaling)
     minConfidence: 35,        // Hyper-aggressive entry
     compoundRatio: 0.90,      // Aggressive reinvestment
-    atrTpMultiplier: 1.5,
-    atrSlMultiplier: 0.8,
-    trailActivation: 1.0,
-    minVolume24h: 50_000,     // Target high-volatility small caps
+    atrTpMultiplier: 2.2,     // Increased from 1.5 to offset fees (Higher reward/risk)
+    atrSlMultiplier: 0.9,     // Slightly tightened SL (0.8 -> 0.9) to preserve capital
+    trailActivation: 1.2,     // Higher trail activation
+    minVolume24h: 75_000,     // More selective (50k -> 75k)
     defaultLeverage: 20,      // High leverage (20x)
+    useMakerOrders: true,     // Use GTC orders to capture Maker fee (0.01% vs 0.035%)
 };
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -405,11 +406,15 @@ export async function marketOrder(
         ? midPrice * (1 + slippagePct / 100)
         : midPrice * (1 - slippagePct / 100);
 
+    // If using Maker orders, we try to set price exactly at mid or slightly behind
+    // to ensure we don't cross the spread immediately as a Taker.
+    const finalPrice = SCALP_CONFIG.useMakerOrders ? midPrice : limitPrice;
+
     const szDecimals = metaData.universe[assetIndex].szDecimals;
     const formattedSize = Number(size.toFixed(szDecimals));
-    const formattedPrice = formatPrice(limitPrice);
+    const formattedPrice = formatPrice(finalPrice);
 
-    console.log(`[Hyperliquid] Executing ${isBuy ? "BUY" : "SELL"} ${formattedSize} ${asset} at approx ${midPrice} (Limit: ${formattedPrice})`);
+    console.log(`[Hyperliquid] Executing ${isBuy ? "BUY" : "SELL"} ${formattedSize} ${asset} (Mode: ${SCALP_CONFIG.useMakerOrders ? "MAKER/GTC" : "TAKER/IOC"}) at ${formattedPrice}`);
 
     return await exchangeClient!.order({
         orders: [{
@@ -419,7 +424,7 @@ export async function marketOrder(
             s: String(formattedSize),
             r: false,
             t: {
-                limit: { tif: "Ioc" }
+                limit: { tif: SCALP_CONFIG.useMakerOrders ? "Gtc" : "Ioc" }
             }
         }],
         grouping: "na"
