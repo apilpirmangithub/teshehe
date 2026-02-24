@@ -303,21 +303,23 @@ export async function getBalance(): Promise<HyperliquidBalance> {
     const perpWithdrawable = parseFloat(userState.withdrawable || "0");
     console.log(`[Hyperliquid] Perp Account Value: ${perpValue}, Withdrawable: ${perpWithdrawable}`);
 
-    // Spot USDC (unified accounts share this with perps)
-    let spotUsdc = 0;
+    // Unified account logic:
+    // Spot USDC total includes the amount 'held' for perps.
+    // Perp account value is technically that 'hold' + PnL.
+    // Total Wealth = (Spot USDC Total - Spot USDC Hold) + Perp Account Value
+    let spotUsdcHold = 0;
     console.log(`[Hyperliquid] Spot Balances: ${JSON.stringify(spotState.balances)}`);
     for (const b of spotState.balances) {
         if (b.coin === "USDC") {
             spotUsdc = parseFloat(b.total || "0");
+            spotUsdcHold = parseFloat(b.hold || "0");
             break;
         }
     }
-    console.log(`[Hyperliquid] Final Spot USDC found: ${spotUsdc}`);
+    console.log(`[Hyperliquid] Final Spot USDC: ${spotUsdc} (Hold: ${spotUsdcHold})`);
 
-    // Unified account: total capital = perp account value + spot USDC
-    // withdrawable = perp withdrawable + spot USDC (since unified shares)
-    const totalValue = perpValue + spotUsdc;
-    const withdrawable = perpWithdrawable + spotUsdc;
+    const totalValue = (spotUsdc - spotUsdcHold) + perpValue;
+    const withdrawable = (spotUsdc - spotUsdcHold) + perpWithdrawable;
     console.log(`[Hyperliquid] Total Calculated Value: ${totalValue}`);
 
     return {
