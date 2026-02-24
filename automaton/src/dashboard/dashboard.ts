@@ -243,6 +243,16 @@ export function renderDashboard(data: DashboardData): string {
 
 // ─── Live Data Collection ─────────────────────────────────────
 
+// Internal dashboard cache to prevent over-aggressive polling when multiple UI tabs are open
+let dashboardCache: {
+  credits?: number;
+  hypurrAlpha?: any[];
+  hypurrFees?: any;
+  timestamp: number;
+} | null = null;
+
+const DASH_CACHE_TTL = 15000; // 15 seconds
+
 /**
  * Gather ALL data for the dashboard.
  */
@@ -259,49 +269,66 @@ export async function collectDashboardData(opts: {
   const agentState = db.getAgentState();
   const turnCount = db.getTurnCount();
 
+  const useCache = dashboardCache && (Date.now() - dashboardCache.timestamp < DASH_CACHE_TTL);
+
   // ── Parallel fetch: credits ──
-  const [creditResult] = await Promise.allSettled([
-    (async () => {
+  let conwayCredits = dashboardCache?.credits || 0;
+  if (!useCache) {
+    try {
       const { createConwayClient } = await import("../conway/client.js");
       const conway = createConwayClient({
         apiUrl: config.conwayApiUrl,
         apiKey: config.conwayApiKey,
         sandboxId: config.sandboxId,
       });
-      return conway.getCreditsBalance();
-    })(),
-  ]);
+      conwayCredits = await conway.getCreditsBalance();
+    } catch { }
+  }
 
-  const conwayCredits = creditResult.status === "fulfilled" ? creditResult.value : 0;
   const proxyStatus = "Direct (Hyperliquid)";
 
   // ── Hypurrscan Data ──
-  let hypurrscanData: any = { recentAlpha: [], protocolFees: null };
-  try {
-    const alphaRes = await fetch("https://api.hypurrscan.io/pastAuctionsPerp");
-    if (alphaRes.ok) {
-      const alpha = await alphaRes.json();
-      // Filter for successful ones and take last 5
-      hypurrscanData.recentAlpha = alpha
-        .filter((a: any) => !a.error && a.action?.registerAsset?.coin)
-        .slice(-6)
-        .reverse()
-        .map((a: any) => ({
-          coin: a.action.registerAsset.coin,
-          time: a.time,
-          dex: a.action.registerAsset.dex || "HL"
-        }));
-    }
+  let hypurrscanData: any = {
+    recentAlpha: dashboardCache?.hypurrAlpha || [],
+    protocolFees: dashboardCache?.hypurrFees || null
+  };
 
-    const feesRes = await fetch("https://api.hypurrscan.io/feesRecent");
-    if (feesRes.ok) {
-      const fees = await feesRes.json();
-      if (fees.length > 0) {
-        hypurrscanData.protocolFees = fees[fees.length - 1];
+  if (!useCache) {
+    try {
+      const alphaRes = await fetch("https://api.hypurrscan.io/pastAuctionsPerp");
+      if (alphaRes.ok) {
+        const alpha = await alphaRes.json();
+        hypurrscanData.recentAlpha = alpha
+          .filter((a: any) => !a.error && a.action?.registerAsset?.coin)
+          .slice(-6)
+          .reverse()
+          .map((a: any) => ({
+            coin: a.action.registerAsset.coin,
+            time: a.time,
+            dex: a.action.registerAsset.dex || "HL"
+          }));
       }
+
+      const feesRes = await fetch("https://api.hypurrscan.io/feesRecent");
+      if (feesRes.ok) {
+        const fees = await feesRes.json();
+        if (fees.length > 0) {
+          hypurrscanData.protocolFees = fees[fees.length - 1];
+        }
+      }
+    } catch (err) {
+      console.warn(`[DASHBOARD] Error fetching Hypurrscan data: ${err}`);
     }
-  } catch (err) {
-    console.warn(`[DASHBOARD] Error fetching Hypurrscan data: ${err}`);
+  }
+
+  // Update global cache if we fetched new data
+  if (!useCache) {
+    dashboardCache = {
+      credits: conwayCredits,
+      hypurrAlpha: hypurrscanData.recentAlpha,
+      hypurrFees: hypurrscanData.protocolFees,
+      timestamp: Date.now()
+    };
   }
 
   // ── Hyperliquid positions ──────────────────────────────────
@@ -318,12 +345,17 @@ export async function collectDashboardData(opts: {
   const scalperWinRate = `${tradeStats.winrate.toFixed(1)}%`;
 
   try {
-    const { getBalance, getMidPrice, checkAgentAuthorization } = await import("../survival/hyperliquid.js");
+    const { getBalance, getMidPrice, checkAgentAuthorization, initHyperliquid, safeRequest } = await import("../survival/hyperliquid.js");
     hlBalance = await getBalance();
     agentAuth = await checkAgentAuthorization();
 
+    // Fetch all prices once to avoid redundant network calls in the loop below
+    const { infoClient } = initHyperliquid();
+    const allMids = await safeRequest(() => infoClient!.allMids());
+
     for (const trade of openTrades) {
-      const midPrice = await getMidPrice(trade.market);
+      const midPriceStr = allMids[trade.market];
+      const midPrice = midPriceStr ? parseFloat(midPriceStr) : await getMidPrice(trade.market);
 
       scalperOpenPositions.push({
         id: trade.id,

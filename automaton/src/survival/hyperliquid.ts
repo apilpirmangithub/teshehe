@@ -18,7 +18,7 @@ import { analyze, type Candle, type TASignal } from "./technicals.js";
 /**
  * Robust request wrapper with exponential backoff for rate limits (429).
  */
-async function safeRequest<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+export async function safeRequest<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
     try {
         return await fn();
     } catch (err: any) {
@@ -110,6 +110,10 @@ let signer: PrivateKeySigner | null = null;
 let cachedAuth: { authorized: boolean; agentAddress: string | null; userAddress: string | null; timestamp: number } | null = null;
 const AUTH_CACHE_TTL = 1000 * 60 * 30; // 30 minutes
 
+// Price Caching to prevent 429s during dashboard/scan overlap
+let cachedMids: { data: Record<string, string>; timestamp: number } | null = null;
+const MIDS_CACHE_TTL = 5000; // 5 seconds
+
 export function initHyperliquid() {
     if (infoClient && exchangeClient) return { infoClient, exchangeClient };
 
@@ -133,11 +137,19 @@ export function initHyperliquid() {
 // ─── Public Data Methods ─────────────────────────────────────────
 
 /**
- * Fetch mid-price for a given asset.
+ * Fetch mid-price for a given asset with short caching.
  */
 export async function getMidPrice(asset: string): Promise<number> {
     const { infoClient } = initHyperliquid();
+
+    if (cachedMids && Date.now() - cachedMids.timestamp < MIDS_CACHE_TTL) {
+        const price = cachedMids.data[asset];
+        if (price) return parseFloat(price);
+    }
+
     const allMids = await safeRequest(() => infoClient!.allMids());
+    cachedMids = { data: allMids, timestamp: Date.now() };
+
     const price = allMids[asset];
     if (!price) throw new Error(`Price not found for asset: ${asset}`);
     return parseFloat(price);
@@ -477,15 +489,18 @@ export async function scanBestOpportunity(_inference?: any): Promise<{
     const { assets } = await getAllTradableAssets();
     console.log(`[Hyperliquid] Scanning ${assets.length} assets with volume ≥ $${(SCALP_CONFIG.minVolume24h / 1000).toFixed(0)}K...`);
 
-    // Scan top 60 by volume for better coverage
-    const topAssets = assets.slice(0, 60);
+    // Scan top 40 by volume for efficiency (preventing HL 429s)
+    const topAssets = assets.slice(0, 40);
 
     const results: AssetOpportunity[] = [];
-    const batchSize = 10;
+    const batchSize = 5; // Smaller batches
     let processedCount = 0;
 
     for (let i = 0; i < topAssets.length; i += batchSize) {
         const batch = topAssets.slice(i, i + batchSize);
+        // Add artificial delay between batches to respect rate limits
+        if (i > 0) await new Promise(resolve => setTimeout(resolve, 300));
+
         const batchResults = await Promise.all(batch.map(async (a) => {
             try {
                 const candles = await getCandles(a.name, "5m", 100);
