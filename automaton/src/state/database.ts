@@ -23,6 +23,8 @@ import type {
   RegistryEntry,
   ReputationEntry,
   InboxMessage,
+  TradeEntry,
+  TradeStats,
 } from "../types.js";
 import { SCHEMA_VERSION, CREATE_TABLES, MIGRATION_V2, MIGRATION_V3 } from "./schema.js";
 
@@ -436,6 +438,77 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     ).run(id);
   };
 
+  // ─── Trades ──────────────────────────────────────────────────
+
+  const insertTrade = (trade: TradeEntry): void => {
+    db.prepare(
+      `INSERT INTO trades (id, market, side, leverage, entry_price, margin_usdc, status, dynamic_tp, dynamic_sl, open_time, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      trade.id,
+      trade.market,
+      trade.side,
+      trade.leverage,
+      trade.entryPrice,
+      trade.marginUsdc,
+      trade.status,
+      trade.dynamicTP,
+      trade.dynamicSL,
+      trade.openTime,
+      trade.confidence ?? null,
+    );
+  };
+
+  const updateTrade = (trade: Partial<TradeEntry> & { id: string }): void => {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    if (trade.closePrice !== undefined) { sets.push("close_price = ?"); vals.push(trade.closePrice); }
+    if (trade.pnlPct !== undefined) { sets.push("pnl_pct = ?"); vals.push(trade.pnlPct); }
+    if (trade.pnlUsdc !== undefined) { sets.push("pnl_usdc = ?"); vals.push(trade.pnlUsdc); }
+    if (trade.status !== undefined) { sets.push("status = ?"); vals.push(trade.status); }
+    if (trade.closeTime !== undefined) { sets.push("close_time = ?"); vals.push(trade.closeTime); }
+    if (trade.closeReason !== undefined) { sets.push("close_reason = ?"); vals.push(trade.closeReason); }
+
+    if (sets.length === 0) return;
+
+    vals.push(trade.id);
+    db.prepare(`UPDATE trades SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  };
+
+  const getTrades = (limit: number): TradeEntry[] => {
+    const rows = db
+      .prepare("SELECT * FROM trades ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as any[];
+    return rows.map(deserializeTrade);
+  };
+
+  const getOpenTrades = (): TradeEntry[] => {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE status = 'open' ORDER BY created_at DESC")
+      .all() as any[];
+    return rows.map(deserializeTrade);
+  };
+
+  const getTradeStats = (): TradeStats => {
+    const row = db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
+        SUM(pnl_usdc) as total_pnl_usdc,
+        SUM(pnl_pct) as total_pnl_pct
+      FROM trades WHERE status = 'closed'
+    `).get() as any;
+
+    const total = row.total || 0;
+    const wins = row.wins || 0;
+    return {
+      totalTrades: total,
+      winrate: total > 0 ? (wins / total) * 100 : 0,
+      totalPnlUsdc: row.total_pnl_usdc || 0,
+      totalPnlPct: row.total_pnl_pct || 0,
+    };
+  };
+
   // ─── Agent State ─────────────────────────────────────────────
 
   const getAgentState = (): AgentState => {
@@ -491,6 +564,11 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     markInboxMessageProcessed,
     getAgentState,
     setAgentState,
+    insertTrade,
+    updateTrade,
+    getTrades,
+    getTradeStats,
+    getOpenTrades,
     close,
   };
 }
@@ -629,5 +707,26 @@ function deserializeReputation(row: any): ReputationEntry {
     comment: row.comment,
     txHash: row.tx_hash ?? undefined,
     timestamp: row.created_at,
+  };
+}
+
+function deserializeTrade(row: any): TradeEntry {
+  return {
+    id: row.id,
+    market: row.market,
+    side: row.side as "LONG" | "SHORT",
+    leverage: row.leverage,
+    entryPrice: row.entry_price,
+    closePrice: row.close_price ?? undefined,
+    marginUsdc: row.margin_usdc,
+    pnlPct: row.pnl_pct ?? undefined,
+    pnlUsdc: row.pnl_usdc ?? undefined,
+    status: row.status as "open" | "closed",
+    dynamicTP: row.dynamic_tp,
+    dynamicSL: row.dynamic_sl,
+    openTime: row.open_time,
+    closeTime: row.close_time ?? undefined,
+    closeReason: row.close_reason ?? undefined,
+    confidence: row.confidence ?? undefined,
   };
 }

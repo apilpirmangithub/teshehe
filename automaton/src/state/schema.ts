@@ -168,7 +168,32 @@ export const CREATE_TABLES = `
 
   CREATE INDEX IF NOT EXISTS idx_inbox_unprocessed
     ON inbox_messages(received_at) WHERE processed_at IS NULL;
+
+  -- Perpetual trade history
+  CREATE TABLE IF NOT EXISTS trades (
+    id TEXT PRIMARY KEY,
+    market TEXT NOT NULL,
+    side TEXT NOT NULL,
+    leverage INTEGER NOT NULL,
+    entry_price REAL NOT NULL,
+    close_price REAL,
+    margin_usdc REAL NOT NULL,
+    pnl_pct REAL,
+    pnl_usdc REAL,
+    status TEXT NOT NULL DEFAULT 'open',
+    dynamic_tp REAL,
+    dynamic_sl REAL,
+    open_time TEXT NOT NULL,
+    close_time TEXT,
+    close_reason TEXT,
+    confidence INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+  CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market);
 `;
+
 
 export const MIGRATION_V3 = `
   CREATE TABLE IF NOT EXISTS inbox_messages (

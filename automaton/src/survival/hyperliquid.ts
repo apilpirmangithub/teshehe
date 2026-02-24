@@ -308,6 +308,7 @@ export async function getBalance(): Promise<HyperliquidBalance> {
     // Perp account value is technically that 'hold' + PnL.
     // Total Wealth = (Spot USDC Total - Spot USDC Hold) + Perp Account Value
     let spotUsdcHold = 0;
+    let spotUsdc = 0;
     console.log(`[Hyperliquid] Spot Balances: ${JSON.stringify(spotState.balances)}`);
     for (const b of spotState.balances) {
         if (b.coin === "USDC") {
@@ -494,7 +495,7 @@ export async function scanBestOpportunity(_inference?: any): Promise<{
                     return null;
                 }
 
-                const signal = analyze(candles, SCALP_CONFIG.defaultLeverage);
+                const signal = analyze(candles, SCALP_CONFIG.defaultLeverage, a.funding);
                 if (signal.direction === "NEUTRAL") {
                     console.log(`[Hyperliquid] ${a.name} neutral: Score ${signal.score} (RSI: ${signal.indicators.rsi.toFixed(1)})`);
                     return null;

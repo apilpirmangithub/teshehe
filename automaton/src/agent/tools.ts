@@ -580,6 +580,7 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
         const heartbeats = ctx.db.getHeartbeatEntries();
         const turns = ctx.db.getTurnCount();
         const state = ctx.db.getAgentState();
+        const stats = ctx.db.getTradeStats();
 
         return `=== SYSTEM SYNOPSIS ===
 Name: ${ctx.config.name}
@@ -593,6 +594,9 @@ USDC (HyperEVM): ${usdcHL.toFixed(6)}
 USDC (Base): ${usdcBase.toFixed(6)}
 USDC (Polygon): ${usdcPolygon.toFixed(6)}
 Total turns: ${turns}
+Total trades: ${stats.totalTrades}
+Winrate: ${stats.winrate.toFixed(1)}%
+Total PnL: $${stats.totalPnlUsdc.toFixed(2)} (${stats.totalPnlPct.toFixed(1)}%)
 Installed tools: ${tools.length}
 Active heartbeats: ${heartbeats.filter((h) => h.enabled).length}
 Model: ${ctx.inference.getDefaultModel()}
@@ -1585,61 +1589,71 @@ Model: ${ctx.inference.getDefaultModel()}
 
         // ── 2. Load positions from DB and HL ──
         const hlPositions = await getOpenPositions();
-        let dbPositions: any[] = [];
-        try { dbPositions = JSON.parse(ctx.db.getKV?.("perp_positions") || "[]"); } catch { }
-
-        const openDbPositions = dbPositions.filter(p => p.status === "open");
+        const openDbTrades = ctx.db.getOpenTrades();
 
         // ── 3. Manage open positions (Dynamic TP/SL) ──
         let closeResults: any[] = [];
-        for (const pos of openDbPositions) {
-          const hlPos = hlPositions.find(h => h.asset === pos.market);
+        for (const trade of openDbTrades) {
+          const hlPos = hlPositions.find(h => h.asset === trade.market);
           if (!hlPos) {
-            pos.status = "closed";
-            pos.closeReason = "closed_external_or_liquidated";
-            pos.closeTime = new Date().toISOString();
-            console.log(`[Hyperliquid] Position ${pos.market} no longer on exchange.`);
+            ctx.db.updateTrade({
+              id: trade.id,
+              status: "closed",
+              closeReason: "closed_external_or_liquidated",
+              closeTime: new Date().toISOString(),
+            });
+            console.log(`[Hyperliquid] Position ${trade.market} no longer on exchange.`);
             continue;
           }
 
-          pos.unrealizedPnl = hlPos.unrealizedPnl;
+          const check = await checkPerpTPSL({
+            market: trade.market,
+            side: trade.side,
+            entryPrice: trade.entryPrice,
+            leverage: trade.leverage,
+            dynamicTP: trade.dynamicTP,
+            dynamicSL: trade.dynamicSL,
+          });
 
-          const check = await checkPerpTPSL(pos);
           if (check && check.shouldClose) {
-            console.log(`[Hyperliquid] Closing ${pos.side} ${pos.market}: ${check.reason} (PnL ${check.pnlPct.toFixed(1)}%)`);
-            const result = await closeHyperPosition(pos.market);
+            console.log(`[Hyperliquid] Closing ${trade.side} ${trade.market}: ${check.reason} (PnL ${check.pnlPct.toFixed(1)}%)`);
+            const result = await closeHyperPosition(trade.market);
             if (result) {
-              pos.status = "closed";
-              pos.closePrice = check.currentPrice;
-              pos.closePnlPct = check.pnlPct;
-              pos.closeTime = new Date().toISOString();
-              pos.closeReason = check.reason;
+              const pnlUsdc = (check.pnlPct / 100) * trade.marginUsdc * trade.leverage;
+              ctx.db.updateTrade({
+                id: trade.id,
+                status: "closed",
+                closePrice: check.currentPrice,
+                pnlPct: check.pnlPct,
+                pnlUsdc,
+                closeTime: new Date().toISOString(),
+                closeReason: check.reason,
+              });
               closeResults.push({
-                market: pos.market,
-                side: pos.side,
+                market: trade.market,
+                side: trade.side,
                 reason: check.reason,
-                pnl: `${check.pnlPct >= 0 ? "+" : ""}${check.pnlPct.toFixed(1)}%`,
+                pnl: `$${pnlUsdc.toFixed(2)} (${check.pnlPct >= 0 ? "+" : ""}${check.pnlPct.toFixed(1)}%)`,
               });
             }
           } else if (check) {
-            output[`position_${pos.market}`] = {
-              side: pos.side,
-              leverage: `${pos.leverage}x`,
-              entry: `$${pos.entryPrice.toFixed(2)}`,
+            output[`position_${trade.market}`] = {
+              side: trade.side,
+              leverage: `${trade.leverage}x`,
+              entry: `$${trade.entryPrice.toFixed(2)}`,
               current: `$${check.currentPrice.toFixed(2)}`,
               pnl: `${check.pnlPct >= 0 ? "+" : ""}${check.pnlPct.toFixed(1)}%`,
-              tp: `${pos.dynamicTP?.toFixed(2) || "?"}% (${check.tp?.toFixed(1)}% lev)`,
-              sl: `${pos.dynamicSL?.toFixed(2) || "?"}% (${check.sl?.toFixed(1)}% lev)`,
+              tp: `${trade.dynamicTP?.toFixed(2) || "?"}% (${check.tp?.toFixed(1)}% lev)`,
+              sl: `${trade.dynamicSL?.toFixed(2) || "?"}% (${check.sl?.toFixed(1)}% lev)`,
             };
           }
         }
         if (closeResults.length > 0) {
           output.CLOSED = closeResults;
-          ctx.db.setKV?.("perp_positions", JSON.stringify(dbPositions));
         }
 
         // ── 4. Full-Universe TA Scan for new opportunity ──
-        const currentlyOpen = dbPositions.filter((p: any) => p.status === "open");
+        const currentlyOpen = ctx.db.getOpenTrades();
         if (currentlyOpen.length < SCALP_CONFIG.maxOpenPositions) {
           const scan = await scanBestOpportunity();
 
@@ -1692,41 +1706,31 @@ Model: ${ctx.inference.getDefaultModel()}
             const result = await marketOrder(bestAvailable.market, bestAvailable.signal.direction === "LONG", sizeAsset);
 
             if (result && result.status === "ok") {
-              const newPos = {
-                id: `hl_${Date.now()}`,
+              const tradeId = `hl_${Date.now()}`;
+              ctx.db.insertTrade({
+                id: tradeId,
                 market: bestAvailable.market,
-                side: bestAvailable.signal.direction,
-                sizeAsset: sizeAsset.toString(),
+                side: bestAvailable.signal.direction as "LONG" | "SHORT",
                 leverage: targetLev,
                 entryPrice: midPx,
                 marginUsdc: margin,
                 dynamicTP,
                 dynamicSL,
-                tpPrice: bestAvailable.signal.direction === "LONG" ? midPx * (1 + dynamicTP / 100) : midPx * (1 - dynamicTP / 100),
-                slPrice: bestAvailable.signal.direction === "LONG" ? midPx * (1 - dynamicSL / 100) : midPx * (1 + dynamicSL / 100),
-                openTime: new Date().toISOString(),
                 status: "open",
-                accountId: account.address,
-                indicators: {
-                  rsi: bestAvailable.signal.indicators.rsi.toFixed(1),
-                  ema: bestAvailable.signal.indicators.emaCross,
-                  macd: bestAvailable.signal.indicators.macdCross,
-                  bb: bestAvailable.signal.indicators.bbPosition.toFixed(2),
-                  vol: bestAvailable.signal.indicators.volumeSurge.toFixed(1),
-                  score: bestAvailable.signal.score,
-                },
-              };
-              dbPositions.push(newPos);
-              ctx.db.setKV?.("perp_positions", JSON.stringify(dbPositions));
+                openTime: new Date().toISOString(),
+                confidence: bestAvailable.signal.confidence,
+              });
+
               output.OPENED = {
-                market: `${newPos.side} ${newPos.market}`,
-                leverage: `${newPos.leverage}x`,
-                entry: `$${newPos.entryPrice.toFixed(2)}`,
-                margin: `$${newPos.marginUsdc.toFixed(2)}`,
+                market: `${bestAvailable.signal.direction} ${bestAvailable.market}`,
+                leverage: `${targetLev}x`,
+                entry: `$${midPx.toFixed(2)}`,
+                margin: `$${margin.toFixed(2)}`,
                 confidence: `${bestAvailable.signal.confidence}%`,
-                tp: `${dynamicTP.toFixed(2)}% ($${newPos.tpPrice.toFixed(2)})`,
-                sl: `${dynamicSL.toFixed(2)}% ($${newPos.slPrice.toFixed(2)})`,
+                tp: `${dynamicTP.toFixed(2)}% ($${(bestAvailable.signal.direction === "LONG" ? midPx * (1 + dynamicTP / 100) : midPx * (1 - dynamicTP / 100)).toFixed(2)})`,
+                sl: `${dynamicSL.toFixed(2)}% ($${(bestAvailable.signal.direction === "LONG" ? midPx * (1 - dynamicSL / 100) : midPx * (1 + dynamicSL / 100)).toFixed(2)})`,
                 score: bestAvailable.signal.score,
+                funding_score: bestAvailable.signal.indicators.fundingScore,
               };
             } else {
               output.OPEN_FAILED = JSON.stringify(result);
@@ -1737,6 +1741,13 @@ Model: ${ctx.inference.getDefaultModel()}
         } else {
           output.action = currentlyOpen.length >= SCALP_CONFIG.maxOpenPositions ? "max_positions" : "low_balance";
         }
+
+        const stats = ctx.db.getTradeStats();
+        output.stats = {
+          total: stats.totalTrades,
+          winrate: `${stats.winrate.toFixed(1)}%`,
+          pnl: `$${stats.totalPnlUsdc.toFixed(2)}`,
+        };
 
         ctx.db.setAgentState("sleeping");
         ctx.db.setKV("sleep_until", new Date(Date.now() + 30000).toISOString());

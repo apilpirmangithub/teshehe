@@ -228,6 +228,34 @@ export type TransactionType =
   | "transfer_out"
   | "funding_request";
 
+// ─── Perpetual Trading ───────────────────────────────────────────
+
+export interface TradeEntry {
+  id: string;
+  market: string;
+  side: "LONG" | "SHORT";
+  leverage: number;
+  entryPrice: number;
+  closePrice?: number;
+  marginUsdc: number;
+  pnlPct?: number;
+  pnlUsdc?: number;
+  status: "open" | "closed";
+  dynamicTP: number;
+  dynamicSL: number;
+  openTime: string;
+  closeTime?: string;
+  closeReason?: string;
+  confidence?: number;
+}
+
+export interface TradeStats {
+  totalTrades: number;
+  winrate: number;
+  totalPnlUsdc: number;
+  totalPnlPct: number;
+}
+
 // ─── Self-Modification ───────────────────────────────────────────
 
 export interface ModificationEntry {
@@ -502,6 +530,13 @@ export interface AutomatonDatabase {
   // State
   getAgentState(): AgentState;
   setAgentState(state: AgentState): void;
+
+  // Trades
+  insertTrade(trade: TradeEntry): void;
+  updateTrade(trade: Partial<TradeEntry> & { id: string }): void;
+  getTrades(limit: number): TradeEntry[];
+  getTradeStats(): TradeStats;
+  getOpenTrades(): TradeEntry[];
 
   close(): void;
 }

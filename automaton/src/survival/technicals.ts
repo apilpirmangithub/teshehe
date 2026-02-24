@@ -37,6 +37,7 @@ export interface TASignal {
         volumeSurge: number; // ratio vs average
         atr: number;
         atrPct: number;      // ATR as % of price
+        fundingScore: number; // Contrarian score from funding
     };
     dynamicTP: number;       // % TP based on ATR
     dynamicSL: number;       // % SL based on ATR
@@ -216,7 +217,7 @@ export function volumeSurge(candles: Candle[], lookback = 20): number {
 /**
  * Run full TA analysis on candle data. Returns composite signal.
  */
-export function analyze(candles: Candle[], leverage: number = 10): TASignal {
+export function analyze(candles: Candle[], leverage: number = 10, fundingRate: number = 0): TASignal {
     const closes = candles.map(c => c.c);
     const currentPrice = closes[closes.length - 1];
 
@@ -306,6 +307,16 @@ export function analyze(candles: Candle[], leverage: number = 10): TASignal {
     else if (momentum < -0.3) score -= 10;
     else if (momentum < -0.1) score -= 5;
 
+    // 7. Funding Rate score (-15 to +15) [Contrarian]
+    // Extreme positive = overcrowded longs = short favor
+    // Extreme negative = overcrowded shorts = long favor
+    maxScore += 15;
+    const fundingScore = 0;
+    if (fundingRate > 0.0001) score -= 15;
+    else if (fundingRate > 0.00005) score -= 7;
+    else if (fundingRate < -0.0001) score += 15;
+    else if (fundingRate < -0.00005) score += 7;
+
     // Normalize score to -100..+100
     const normalizedScore = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
     const absScore = Math.abs(normalizedScore);
@@ -347,6 +358,7 @@ export function analyze(candles: Candle[], leverage: number = 10): TASignal {
             volumeSurge: volSurge,
             atr: atrVal,
             atrPct,
+            fundingScore: fundingRate > 0.00005 ? -1 : fundingRate < -0.00005 ? 1 : 0,
         },
         dynamicTP,
         dynamicSL,
