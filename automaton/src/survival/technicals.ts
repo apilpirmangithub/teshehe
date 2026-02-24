@@ -224,11 +224,13 @@ export function analyze(candles: Candle[], leverage: number = 10, fundingRate: n
     // 1. RSI
     const rsiVal = rsi(closes, 14);
 
-    // 2. EMA crossover (9/21)
+    // 2. EMA crossover (9/21) + 200 EMA Filter
     const ema9 = ema(closes, 9);
     const ema21 = ema(closes, 21);
+    const ema200 = ema(closes, 200);
     const emaFastLast = ema9[ema9.length - 1] || currentPrice;
     const emaSlowLast = ema21[ema21.length - 1] || currentPrice;
+    const emaTrendLast = ema200[ema200.length - 1] || currentPrice;
     const emaFastPrev = ema9[ema9.length - 2] || emaFastLast;
     const emaSlowPrev = ema21[ema21.length - 2] || emaSlowLast;
     const emaCross: "BULLISH" | "BEARISH" | "NEUTRAL" =
@@ -321,10 +323,13 @@ export function analyze(candles: Candle[], leverage: number = 10, fundingRate: n
     const normalizedScore = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
     const absScore = Math.abs(normalizedScore);
 
-    // Direction + confidence
+    // Direction + confidence + Filter rules
+    const trendAligns = (normalizedScore >= 40 && currentPrice > emaTrendLast) || (normalizedScore <= -40 && currentPrice < emaTrendLast);
+    const volumeConfirms = volSurge >= 1.2;
+
     const direction: "LONG" | "SHORT" | "NEUTRAL" =
-        normalizedScore >= 40 ? "LONG" :
-            normalizedScore <= -40 ? "SHORT" : "NEUTRAL";
+        (normalizedScore >= 40 && trendAligns && volumeConfirms) ? "LONG" :
+            (normalizedScore <= -40 && trendAligns && volumeConfirms) ? "SHORT" : "NEUTRAL";
 
     const confidence = Math.min(100, absScore);
 

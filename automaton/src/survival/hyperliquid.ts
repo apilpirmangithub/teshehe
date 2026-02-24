@@ -54,10 +54,10 @@ const IS_TESTNET = false;
 
 export const SCALP_CONFIG = {
     maxOpenPositions: 2,      // Updated to 2 at user request
-    maxMarginPct: 0.15,       // 15% per slot for survival (self-aware scaling)
-    minConfidence: 35,        // Hyper-aggressive entry
-    compoundRatio: 0.90,      // Aggressive reinvestment
-    atrTpMultiplier: 2.2,     // Increased from 1.5 to offset fees (Higher reward/risk)
+    maxMarginPct: 0.40,       // BERSERKER: 40% per slot (High risk, high reward)
+    minConfidence: 30,        // More aggressive entry (35 -> 30)
+    compoundRatio: 0.95,      // Near-total reinvestment
+    atrTpMultiplier: 2.5,     // Increased to 2.5 for larger big-move capture
     atrSlMultiplier: 0.9,     // Slightly tightened SL (0.8 -> 0.9) to preserve capital
     trailActivation: 1.2,     // Higher trail activation
     minVolume24h: 75_000,     // More selective (50k -> 75k)
